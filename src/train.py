@@ -95,11 +95,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--hidden",
-        "--hidden-units",
         type=int,
         default=64,
-        dest="hidden",
-        help="Number of hidden units.",
+        help="Number of hidden units for intermediate layers.",
+    )
+    parser.add_argument(
+        "--out-hidden",
+        type=int,
+        default=32,
+        help="Number of hidden units for the output projection.",
     )
     parser.add_argument(
         "--dropout",
@@ -176,7 +180,7 @@ def main():
     model = HGCN(
         nfeat=dataset.num_features,
         nhid=args.hidden,
-        nout=args.hidden,
+        nout=args.out_hidden,
         nclass=dataset.num_classes,
         dropout=args.dropout,
     ).to(device)
@@ -230,7 +234,8 @@ def main():
                 f"seed{args.seed}",
                 f"epochs{epochs}",
                 f"lr{args.learning_rate:g}",
-                f"hidden{args.hidden}",
+                f"nhid{args.hidden}",
+                f"nout{args.out_hidden}",
                 f"dropout{args.dropout:g}",
                 f"wd{args.weight_decay:g}",
                 clip_label,
