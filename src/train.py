@@ -4,6 +4,7 @@ from typing import Any, Dict
 import torch
 from torch import Tensor
 from tqdm.auto import tqdm
+from torch_sparse import SparseTensor
 from torch_geometric.datasets import Planetoid
 from torch_geometric.transforms import NormalizeFeatures
 
@@ -20,7 +21,7 @@ def set_seed(seed: int = 42):
         torch.backends.cudnn.benchmark = False
 
 
-def build_incidence_matrix(edge_index: Tensor, num_nodes: int) -> Tensor:
+def build_incidence_matrix(edge_index: Tensor, num_nodes: int) -> SparseTensor:
     """
     Convert CORA's edge_index to a hypergraph incidence matrix.
     Each node defines a hyperedge containing itself and its first-order neighbors.
@@ -41,11 +42,14 @@ def build_incidence_matrix(edge_index: Tensor, num_nodes: int) -> Tensor:
             rows.append(node_id)
             cols.append(hyperedge_id)
 
-    indices = torch.tensor([rows, cols], dtype=torch.long)
+    row_idx = torch.tensor(rows, dtype=torch.long)
+    col_idx = torch.tensor(cols, dtype=torch.long)
     values = torch.ones(len(rows), dtype=torch.float32)
-    size = (num_nodes, num_nodes)
 
-    return torch.sparse_coo_tensor(indices, values, size)
+    H = SparseTensor(
+        row=row_idx, col=col_idx, value=values, sparse_sizes=(num_nodes, num_nodes)
+    )
+    return H
 
 
 def accuracy(logits: Tensor, labels: Tensor) -> float:
