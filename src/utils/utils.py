@@ -20,10 +20,12 @@ def normalize_propagation(H: torch.Tensor) -> torch.Tensor:
 
     D = torch.sparse.sum(H, dim=1).to_dense()
     D_exp = D ** (-1 / 2)  # D^{-1/2}
+    D_exp[D_exp == float("inf")] = 0
     D_exp = torch.diag(D_exp).to_sparse_coo()
 
     B = torch.sparse.sum(H, dim=0, dtype=torch.float32).to_dense()
     B_inv = B ** (-1)  # B^{-1}
+    B_inv[B_inv == float("inf")] = 0
     B_inv = torch.diag(B_inv).to_sparse_coo()
 
     # S = D^{-1/2}HB^{-1}H^T D^{-1/2}
