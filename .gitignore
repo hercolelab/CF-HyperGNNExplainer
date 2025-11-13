@@ -208,3 +208,9 @@ __marimo__/
 
 # The datasets directory
 data/
+
+# Models' checkpoints directory
+models/
+
+# macOS is macOS
+.DS_Store

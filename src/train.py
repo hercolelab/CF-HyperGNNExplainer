@@ -1,3 +1,4 @@
+import argparse
 import os
 from typing import Any, Dict
 
@@ -8,8 +9,10 @@ from torch_sparse import SparseTensor
 from torch_geometric.datasets import Planetoid
 from torch_geometric.transforms import NormalizeFeatures
 
-from hgcn import HGCN
+from torch.nn.utils import clip_grad_norm_
+
 from utils import normalize_propagation
+from hgcn import HGCN
 
 
 def set_seed(seed: int = 42):
@@ -59,6 +62,79 @@ def accuracy(logits: Tensor, labels: Tensor) -> float:
     return preds.eq(labels).sum().item() / labels.size(0)
 
 
+def sanitize_checkpoint_name(text: str) -> str:
+    sanitized = []
+    for ch in text:
+        if ch.isalnum() or ch in {"-", "_", "."}:
+            sanitized.append(ch)
+        else:
+            sanitized.append("_")
+    result = "".join(sanitized)
+    return result if result else "model"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train HGCN.")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility.",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=200,
+        help="Number of training epochs.",
+    )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=0.01,
+        help="Optimizer learning rate.",
+    )
+    parser.add_argument(
+        "--hidden",
+        "--hidden-units",
+        type=int,
+        default=64,
+        dest="hidden",
+        help="Number of hidden units.",
+    )
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        default=0.5,
+        help="Dropout rate.",
+    )
+    parser.add_argument(
+        "--weight-decay",
+        type=float,
+        default=0.0005,
+        help="Weight decay (L2 penalty).",
+    )
+    parser.add_argument(
+        "--clip-grad-norm",
+        type=float,
+        default=1.0,
+        help="Maximum gradient norm. Set to 0 or negative to disable clipping.",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=("auto", "cpu", "cuda"),
+        help="Device to use for training. 'auto' selects CUDA if available.",
+    )
+    parser.add_argument(
+        "--model-name",
+        type=str,
+        default="hgcn",
+        help="Base name for the saved model checkpoint.",
+    )
+    return parser.parse_args()
+
+
 def evaluate(model: HGCN, data, S: Tensor) -> Dict[str, Dict[str, float]]:
     model.eval()
     metrics: Dict[str, Dict[str, float]] = {}
@@ -75,9 +151,19 @@ def evaluate(model: HGCN, data, S: Tensor) -> Dict[str, Dict[str, float]]:
 
 
 def main():
-    set_seed(42)
+    args = parse_args()
+    set_seed(args.seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        requested = torch.device(args.device)
+        if requested.type == "cuda" and not torch.cuda.is_available():
+            print("CUDA requested but not available. Falling back to CPU.")
+            device = torch.device("cpu")
+        else:
+            device = requested
+
     print(f"Using device: {device}")
 
     data_root = os.path.join(os.path.dirname(__file__), "..", "data", "Planetoid")
@@ -89,14 +175,16 @@ def main():
 
     model = HGCN(
         nfeat=dataset.num_features,
-        nhid=64,
-        nout=32,
+        nhid=args.hidden,
+        nout=args.hidden,
         nclass=dataset.num_classes,
-        dropout=0.5,
+        dropout=args.dropout,
     ).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=0.0005)
-    epochs = 200
+    optimizer = torch.optim.Adam(
+        model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
+    )
+    epochs = args.epochs
 
     for epoch in tqdm(range(1, epochs + 1), desc="Training epochs"):
         model.train()
@@ -105,6 +193,8 @@ def main():
         out = model(data.x, S)
         loss = model.loss(out[data.train_mask], data.y[data.train_mask])
         loss.backward()
+        if args.clip_grad_norm > 0:
+            clip_grad_norm_(model.parameters(), args.clip_grad_norm)
         optimizer.step()
 
         train_acc = accuracy(out[data.train_mask], data.y[data.train_mask])
@@ -124,6 +214,41 @@ def main():
     print(
         f"Test Loss: {test_metrics['loss']:.4f} | Test Acc: {test_metrics['acc']:.4f}"
     )
+
+    models_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "models")
+    )
+    os.makedirs(models_dir, exist_ok=True)
+
+    clip_label = (
+        f"clip{args.clip_grad_norm:g}" if args.clip_grad_norm > 0 else "clipNone"
+    )
+    checkpoint_name = (
+        "_".join(
+            [
+                sanitize_checkpoint_name(args.model_name),
+                f"seed{args.seed}",
+                f"epochs{epochs}",
+                f"lr{args.learning_rate:g}",
+                f"hidden{args.hidden}",
+                f"dropout{args.dropout:g}",
+                f"wd{args.weight_decay:g}",
+                clip_label,
+            ]
+        )
+        + ".pt"
+    )
+
+    checkpoint_path = os.path.join(models_dir, checkpoint_name)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "args": vars(args),
+            "test_metrics": test_metrics,
+        },
+        checkpoint_path,
+    )
+    print(f"Saved checkpoint to {checkpoint_path}")
 
 
 if __name__ == "__main__":
