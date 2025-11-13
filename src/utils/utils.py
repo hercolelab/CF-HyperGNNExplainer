@@ -1,7 +1,8 @@
 import torch
+from torch_sparse import SparseTensor, matmul
 
 
-def normalize_propagation(H: torch.Tensor) -> torch.Tensor:
+def normalize_propagation(H: SparseTensor) -> SparseTensor:
     """
     Compute the normalized propagation matrix of a hypergraph.
     Args:
@@ -18,17 +19,36 @@ def normalize_propagation(H: torch.Tensor) -> torch.Tensor:
     - H is the hypergraph incidence matrix
     """
 
-    D = torch.sparse.sum(H, dim=1).to_dense()
-    D_exp = D ** (-1 / 2)  # D^{-1/2}
-    D_exp[D_exp == float("inf")] = 0
-    D_exp = torch.diag(D_exp).to_sparse_coo()
+    num_nodes, num_hyperedges = H.sparse_sizes()
 
-    B = torch.sparse.sum(H, dim=0, dtype=torch.float32).to_dense()
-    B_inv = B ** (-1)  # B^{-1}
-    B_inv[B_inv == float("inf")] = 0
-    B_inv = torch.diag(B_inv).to_sparse_coo()
+    D = H.sum(dim=1).to(torch.float32)
+    D_inv_sqrt = D.pow(-0.5)
+    D_inv_sqrt[torch.isinf(D_inv_sqrt)] = 0.0
 
-    # S = D^{-1/2}HB^{-1}H^T D^{-1/2}
-    S = D_exp @ H @ B_inv @ H.T @ D_exp
+    B = H.sum(dim=0).to(torch.float32)
+    B_inv = B.pow(-1.0)
+    B_inv[torch.isinf(B_inv)] = 0.0
+
+    node_idx = torch.arange(num_nodes, device=D_inv_sqrt.device)
+    edge_idx = torch.arange(num_hyperedges, device=B_inv.device)
+
+    D_inv_sqrt = SparseTensor(
+        row=node_idx,
+        col=node_idx,
+        value=D_inv_sqrt,
+        sparse_sizes=(num_nodes, num_nodes),
+    )
+
+    B_inv = SparseTensor(
+        row=edge_idx,
+        col=edge_idx,
+        value=B_inv,
+        sparse_sizes=(num_hyperedges, num_hyperedges),
+    )
+
+    S = matmul(D_inv_sqrt, H)
+    S = matmul(S, B_inv)
+    S = matmul(S, H.t())
+    S = matmul(S, D_inv_sqrt)
 
     return S
