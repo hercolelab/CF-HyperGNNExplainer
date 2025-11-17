@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import pickle
 import time
 
 import torch
@@ -25,7 +26,12 @@ def parse_args() -> argparse.Namespace:
         default="Cora",
         help="Name of the Planetoid dataset to load (e.g. Cora, Citeseer, Pubmed)",
     )
-    parser.add_argument("--target-node", type=int, default=45, help="Node to explain")
+    parser.add_argument(
+        "--target-node",
+        type=int,
+        default=None,
+        help="Optional node to explain (default: run on all Planetoid test nodes).",
+    )
     parser.add_argument(
         "--n-hops", type=int, default=4, help="Neighborhood radius for the explainer"
     )
@@ -77,6 +83,11 @@ def parse_args() -> argparse.Namespace:
         choices=("auto", "cpu", "cuda", "mps"),
         help="Device used for inference and explanation. 'auto' selects CUDA or MPS if available",
     )
+    parser.add_argument(
+        "--output-path",
+        default=None,
+        help="Destination pickle file for CF examples (default: results/cf_examples_<dataset>_<timestamp>.pkl)",
+    )
     return parser.parse_args()
 
 
@@ -104,9 +115,8 @@ def main() -> None:
     device = resolve_device(args.device)
     print(f"Using device: {device}")
 
-    data_root = os.path.join(os.path.dirname(__file__), "..", "data", "Planetoid")
     dataset = Planetoid(
-        root=data_root,
+        root=os.path.join(os.path.dirname(__file__), "..", "data", "Planetoid"),
         name=args.dataset,
         transform=NormalizeFeatures(),
     )
@@ -131,70 +141,107 @@ def main() -> None:
         out = model(data.x, S)
         y_pred_all = torch.argmax(out, dim=1)
 
-    if not 0 <= args.target_node < data.num_nodes:
-        raise ValueError(
-            f"target node {args.target_node} is outside the range of nodes in {args.dataset}"
+    if args.target_node is None:
+        target_nodes = [int(idx) for idx in torch.where(data.test_mask)[0]]
+        if not target_nodes:
+            raise ValueError(f"Dataset {args.dataset} has no test nodes.")
+        print(f"Explaining {len(target_nodes)} node(s) from the test set.")
+    else:
+        if not 0 <= args.target_node < data.num_nodes:
+            raise ValueError(
+                f"target node {args.target_node} is outside the range of nodes in {args.dataset}"
+            )
+        target_nodes = [args.target_node]
+
+    cf_examples_per_node: list[list] = []
+    num_successful = 0
+    total_start = time.time()
+    for target_node in target_nodes:
+        print(f"\n=== Running CF explainer for target node {target_node} ===")
+
+        y_pred_orig = y_pred_all[target_node]
+        sub_H, sub_feat, sub_labels, node_dict = get_hyper_neighbourhood(
+            node_idx=target_node,
+            H=H,
+            n_hops=args.n_hops,
+            features=data.x,
+            labels=data.y,
         )
 
-    y_pred_orig = y_pred_all[args.target_node]
-    sub_H, sub_feat, sub_labels, node_dict = get_hyper_neighbourhood(
-        node_idx=args.target_node,
-        H=H,
-        n_hops=args.n_hops,
-        features=data.x,
-        labels=data.y,
-    )
+        sub_H = sub_H.to(device)
+        sub_feat = sub_feat.to(device)
+        sub_labels = sub_labels.to(device)
 
-    if args.target_node not in node_dict:
-        raise ValueError(
-            f"Target node {args.target_node} fell outside the {args.n_hops}-hop neighborhood."
+        target_node_sub_idx = node_dict[target_node]
+        explainer = CFExplainer(
+            model=model,
+            sub_H=sub_H,
+            sub_feat=sub_feat,
+            sub_labels=sub_labels,
+            y_pred_orig=y_pred_orig,
+            beta=args.beta,
+            target_node_sub_idx=target_node_sub_idx,
+            device=device,
         )
 
-    sub_H = sub_H.to(device)
-    sub_feat = sub_feat.to(device)
-    sub_labels = sub_labels.to(device)
-
-    target_node_sub_idx = node_dict[args.target_node]
-    explainer = CFExplainer(
-        model=model,
-        sub_H=sub_H,
-        sub_feat=sub_feat,
-        sub_labels=sub_labels,
-        y_pred_orig=y_pred_orig,
-        beta=args.beta,
-        target_node_sub_idx=target_node_sub_idx,
-        device=device,
-    )
-
-    start = time.time()
-    best_cf_examples = explainer.explain(
-        cf_optimizer=args.cf_optimizer,
-        node_idx=args.target_node,
-        new_idx=target_node_sub_idx,
-        lr=args.lr,
-        n_momentum=args.n_momentum,
-        num_epochs=args.num_epochs,
-    )
-    elapsed = time.time() - start
-    print(f"Explainer run time: {elapsed:.2f}s")
-
-    if not best_cf_examples:
-        print("No counterfactual example changing the prediction was found.")
-        return
-
-    best_stats = best_cf_examples[-1]
-    cf_H_np = best_stats[2]
-
-    cf_H = torch.tensor(cf_H_np, device=device, dtype=sub_H.dtype)
-    with torch.no_grad():
-        S_cf = normalize_propagation(cf_H)
-        cf_out = model(sub_feat, S_cf)
-        cf_pred = torch.argmax(cf_out, dim=1)
-        new_idx = target_node_sub_idx
-        print(
-            f"Original model prediction on best CF hypergraph "
-            f"(target node {args.target_node} in subgraph idx {new_idx}): {cf_pred[new_idx].item()}"
+        node_start = time.time()
+        best_cf_examples = explainer.explain(
+            cf_optimizer=args.cf_optimizer,
+            node_idx=target_node,
+            new_idx=target_node_sub_idx,
+            lr=args.lr,
+            n_momentum=args.n_momentum,
+            num_epochs=args.num_epochs,
         )
+        node_elapsed = time.time() - node_start
+        print(f"Node {target_node} run time: {node_elapsed:.2f}s")
+
+        if not best_cf_examples:
+            print(
+                "No counterfactual example changing the prediction was found for this node."
+            )
+            cf_examples_per_node.append([])
+            continue
+
+        best_stats = best_cf_examples[-1]
+        cf_H_np = best_stats[2]
+        cf_examples_per_node.append([best_stats])
+        num_successful += 1
+
+        cf_H = torch.tensor(cf_H_np, device=device, dtype=sub_H.dtype)
+        with torch.no_grad():
+            S_cf = normalize_propagation(cf_H)
+            cf_out = model(sub_feat, S_cf)
+            cf_pred = torch.argmax(cf_out, dim=1)
+            print(
+                f"Original model prediction on best CF hypergraph "
+                f"(target node {target_node}, subgraph idx {target_node_sub_idx}): "
+                f"{cf_pred[target_node_sub_idx].item()}"
+            )
+
+    total_elapsed = time.time() - total_start
+    print(f"\nTotal explainer run time: {total_elapsed:.2f}s")
+    num_targets = len(target_nodes)
+    print(f"Counterfactual examples found for {num_successful}/{num_targets} node(s).")
+
+    if cf_examples_per_node:
+        if args.output_path:
+            output_path = os.path.abspath(args.output_path)
+            output_dir = os.path.dirname(output_path)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+        else:
+            results_dir = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "results")
+            )
+            os.makedirs(results_dir, exist_ok=True)
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            filename = f"cf_examples_{args.dataset.lower()}_{timestamp}.pkl"
+            output_path = os.path.join(results_dir, filename)
+
+        with open(output_path, "wb") as f:
+            pickle.dump(cf_examples_per_node, f)
+        print(f"Saved CF examples (including empty entries) to {output_path}")
 
 
 if __name__ == "__main__":
