@@ -150,6 +150,19 @@ class CFExplainer:
             output[self.new_idx], self.y_pred_orig, y_pred_new_actual
         )
         loss_total.backward()
+
+        pi_hat_grad = self.cf_model.pi_i_hat.grad
+        if pi_hat_grad is None:
+            print(
+                f"⚠️ WARNING (Epoch {epoch + 1}): pi_hat has no gradient (grad is None)"
+            )
+        elif torch.all(pi_hat_grad == 0):
+            print(f"⚠️WARNING (Epoch {epoch + 1}): pi_hat gradient is all zeros")
+        else:
+            grad_norm = pi_hat_grad.norm().item()
+            grad_max = pi_hat_grad.abs().max().item()
+            print(f"pi_hat gradient norm: {grad_norm:.6f}, max: {grad_max:.6f}")
+
         clip_grad_norm_(self.cf_model.parameters(), 2.0)
         self.cf_optimizer.step()
 
