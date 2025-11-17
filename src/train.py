@@ -103,6 +103,12 @@ def parse_args() -> argparse.Namespace:
         help="Optimizer learning rate",
     )
     parser.add_argument(
+        "--dataset",
+        type=str,
+        default="Cora",
+        help="Name of the Planetoid dataset to load (e.g. Cora, Citeseer, Pubmed)",
+    )
+    parser.add_argument(
         "--hidden",
         type=int,
         default=64,
@@ -199,7 +205,9 @@ def main():
     print(f"Using device: {device}")
 
     data_root = os.path.join(os.path.dirname(__file__), "..", "data", "Planetoid")
-    dataset = Planetoid(root=data_root, name="Cora", transform=NormalizeFeatures())
+    dataset = Planetoid(
+        root=data_root, name=args.dataset, transform=NormalizeFeatures()
+    )
     data = dataset[0].to(device)
 
     H = build_incidence_matrix(data.edge_index, data.num_nodes)
