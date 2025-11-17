@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from utils import normalize_propagation
+from torch_sparse import matmul
 
 
 class HypergraphConv(nn.Module):
@@ -36,7 +36,7 @@ class HypergraphConv(nn.Module):
             x: Node features [num_nodes, in_channels]
             S: propagation matrix [num_nodes, num_nodes]
         """
-        out = S @ x @ self.weight
+        out = matmul(S, x) @ self.weight
         if self.bias is not None:
             out = out + self.bias
         return out
@@ -65,9 +65,14 @@ class HGCN(nn.Module):
 
 
 # if __name__ == "__main__":
-#     H = torch.tensor(
-#         [[1, 1, 0], [1, 0, 0], [0, 1, 1], [0, 0, 1], [1, 0, 0], [0, 0, 1]],
-#         dtype=torch.float32,
+#     from utils import normalize_propagation
+#     from torch_sparse import SparseTensor
+
+#     H = SparseTensor.from_dense(
+#         torch.tensor(
+#             [[1, 1, 0], [1, 0, 0], [0, 1, 1], [0, 0, 1], [1, 0, 0], [0, 0, 1]],
+#             dtype=torch.float32,
+#         )
 #     )
 
 #     S = normalize_propagation(H)
