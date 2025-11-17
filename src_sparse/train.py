@@ -5,6 +5,7 @@ from typing import Any, Dict
 import torch
 from torch import Tensor
 from tqdm.auto import tqdm
+from torch_sparse import SparseTensor
 from torch_geometric.datasets import Planetoid
 from torch_geometric.transforms import NormalizeFeatures
 
@@ -23,7 +24,7 @@ def set_seed(seed: int = 42):
         torch.backends.cudnn.benchmark = False
 
 
-def build_incidence_matrix(edge_index: Tensor, num_nodes: int) -> torch.Tensor:
+def build_incidence_matrix(edge_index: Tensor, num_nodes: int) -> SparseTensor:
     """
     Convert CORA's edge_index to a hypergraph incidence matrix.
     Each node defines a hyperedge containing itself and its first-order neighbors.
@@ -48,20 +49,13 @@ def build_incidence_matrix(edge_index: Tensor, num_nodes: int) -> torch.Tensor:
     col_idx = torch.tensor(cols, dtype=torch.long)
     values = torch.ones(len(rows), dtype=torch.float32)
 
-    H = torch.zeros((num_nodes, num_nodes), dtype=torch.float32)
-    H[row_idx, col_idx] = values
+    H = SparseTensor(
+        row=row_idx, col=col_idx, value=values, sparse_sizes=(num_nodes, num_nodes)
+    )
     return H
 
 
 def accuracy(logits: Tensor, labels: Tensor) -> float:
-    """
-    Calculate the accuracy of the model's predictions
-    Args:
-        logits: The logits of the model's predictions
-        labels: The labels of the data
-    Returns:
-        The accuracy of the model's predictions
-    """
     if labels.numel() == 0:
         return 0.0
     preds = logits.argmax(dim=1)
@@ -69,9 +63,6 @@ def accuracy(logits: Tensor, labels: Tensor) -> float:
 
 
 def sanitize_checkpoint_name(text: str) -> str:
-    """
-    Sanitize the checkpoint name to make it a valid filename
-    """
     sanitized = []
     for ch in text:
         if ch.isalnum() or ch in {"-", "_", "."}:
@@ -88,76 +79,67 @@ def parse_args() -> argparse.Namespace:
         "--seed",
         type=int,
         default=42,
-        help="Random seed for reproducibility",
+        help="Random seed for reproducibility.",
     )
     parser.add_argument(
         "--epochs",
         type=int,
         default=200,
-        help="Number of training epochs",
+        help="Number of training epochs.",
     )
     parser.add_argument(
         "--learning-rate",
         type=float,
         default=0.01,
-        help="Optimizer learning rate",
+        help="Optimizer learning rate.",
     )
     parser.add_argument(
         "--hidden",
         type=int,
         default=64,
-        help="Number of hidden units for intermediate layers",
+        help="Number of hidden units for intermediate layers.",
     )
     parser.add_argument(
         "--out-hidden",
         type=int,
         default=32,
-        help="Number of hidden units for the output projection",
+        help="Number of hidden units for the output projection.",
     )
     parser.add_argument(
         "--dropout",
         type=float,
         default=0.5,
-        help="Dropout rate",
+        help="Dropout rate.",
     )
     parser.add_argument(
         "--weight-decay",
         type=float,
         default=0.0005,
-        help="Weight decay (L2 penalty)",
+        help="Weight decay (L2 penalty).",
     )
     parser.add_argument(
         "--clip-grad-norm",
         type=float,
         default=1.0,
-        help="Maximum gradient norm. Set to 0 or negative to disable clipping",
+        help="Maximum gradient norm. Set to 0 or negative to disable clipping.",
     )
     parser.add_argument(
         "--device",
         type=str,
         default="auto",
-        choices=("auto", "cpu", "cuda", "mps"),
-        help="Device used for training. 'auto' selects CUDA or MPS if available",
+        choices=("auto", "cpu", "cuda"),
+        help="Device to use for training. 'auto' selects CUDA if available.",
     )
     parser.add_argument(
         "--model-name",
         type=str,
         default="hgcn",
-        help="Base name for the saved model checkpoint",
+        help="Base name for the saved model checkpoint.",
     )
     return parser.parse_args()
 
 
 def evaluate(model: HGCN, data, S: Tensor) -> Dict[str, Dict[str, float]]:
-    """
-    Evaluate the model on the data
-    Args:
-        model: The model to evaluate
-        data: The data to evaluate the model on
-        S: The propagation matrix, computed from the incidence matrix H
-    Returns:
-        A dictionary containing the metrics for each split (train, val, test)
-    """
     model.eval()
     metrics: Dict[str, Dict[str, float]] = {}
     with torch.no_grad():
@@ -177,21 +159,11 @@ def main():
     set_seed(args.seed)
 
     if args.device == "auto":
-        # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        device = torch.device(
-            "cuda"
-            if torch.cuda.is_available()
-            else "mps"
-            if torch.backends.mps.is_available()
-            else "cpu"
-        )
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
         requested = torch.device(args.device)
         if requested.type == "cuda" and not torch.cuda.is_available():
             print("CUDA requested but not available. Falling back to CPU.")
-            device = torch.device("cpu")
-        elif requested.type == "mps" and not torch.backends.mps.is_available():
-            print("MPS requested but not available. Falling back to CPU.")
             device = torch.device("cpu")
         else:
             device = requested
