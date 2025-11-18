@@ -209,8 +209,14 @@ __marimo__/
 # The datasets directory
 data/
 
-# Models' checkpoints directory
+# Models' checkpoints directory, this line will be removed in the future from .gitignore
 models/
 
 # macOS is macOS
 .DS_Store
+
+# Temp checkpoints
+src*/*.pt
+
+# Results
+results/
