@@ -60,7 +60,7 @@ class HGCN_Perturb(nn.Module):
         # All these variables are updated using forward and forward_pred methods
 
         # The differentiable version of pi_i, the perturbation vector
-        self.pi_i_hat = nn.Parameter(torch.zeros(num_edges), requires_grad=True)
+        self.pi_i_hat = nn.Parameter(torch.ones(num_edges), requires_grad=True)
         self.pi_i = None
 
         self.Pi_hat = None  # The differentiable version of self.Pi
