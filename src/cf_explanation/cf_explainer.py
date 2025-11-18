@@ -136,7 +136,8 @@ class CFExplainer:
         """
         assert self.cf_optimizer is not None, "Call `explain` before `train`"
 
-        self.cf_model.train()
+        # self.cf_model.train()
+        self.cf_model.eval()
         self.cf_optimizer.zero_grad()
 
         output = self.cf_model.forward(self.sub_feat, self.sub_H)
