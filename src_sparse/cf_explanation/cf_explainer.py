@@ -9,7 +9,8 @@ from torch import Tensor
 from torch.nn.utils import clip_grad_norm_
 
 
-from .sparse_hgcn_perturb import HGCN_Perturb
+from .v1_strategy_sparse_hgcn_perturb import HGCN_Perturb
+# from .v3_strategy_sparse_hgcn_perturb import HGCN_Perturb
 
 
 class CFExplainer:
