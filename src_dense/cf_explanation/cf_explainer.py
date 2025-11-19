@@ -7,7 +7,8 @@ import torch.optim as optim
 from torch import Tensor
 from torch.nn.utils import clip_grad_norm_
 
-from .dense_hgcn_perturb import HGCN_Perturb
+from .v1_strategy_dense_hgcn_perturb import HGCN_Perturb
+# from .v3_strategy_dense_hgcn_perturb import HGCN_Perturb
 
 
 class CFExplainer:
