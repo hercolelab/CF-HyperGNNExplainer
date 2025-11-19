@@ -7,8 +7,8 @@ import torch.optim as optim
 from torch import Tensor
 from torch.nn.utils import clip_grad_norm_
 
-from .v1_strategy_dense_hgcn_perturb import HGCN_Perturb
-# from .v3_strategy_dense_hgcn_perturb import HGCN_Perturb
+from .v1_strategy_dense_hgcn_perturb import HGCN_Perturb as HGCN_Perturb_v1
+from .v3_strategy_dense_hgcn_perturb import HGCN_Perturb as HGCN_Perturb_v3
 
 
 class CFExplainer:
@@ -26,6 +26,7 @@ class CFExplainer:
         beta: float,
         target_node_sub_idx: int,
         device: torch.device,
+        strategy: str = "v1",
     ):
         """
         Args:
@@ -37,6 +38,7 @@ class CFExplainer:
             beta: Trade-off weight between prediction and graph distance losses
             target_node_sub_idx: Index of the target node in the subgraph
             device: Torch device to run the CF model
+            strategy: Explanation strategy ("v1" or "v3")
         """
         super().__init__()
 
@@ -56,7 +58,14 @@ class CFExplainer:
         nclass = model.linear.out_features
         dropout = model.dropout
 
-        self.cf_model = HGCN_Perturb(
+        if strategy == "v1":
+            StrategyClass = HGCN_Perturb_v1
+        elif strategy == "v3":
+            StrategyClass = HGCN_Perturb_v3
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}")
+
+        self.cf_model = StrategyClass(
             nfeat=self.sub_feat.shape[1],
             nhid=nhid,
             nout=nout,
