@@ -46,6 +46,12 @@ def parse_args() -> argparse.Namespace:
         default="SGD",
         help="Optimizer for the counterfactual explainer",
     )
+    parser.add_argument(
+        "--strategy",
+        choices=("v1", "v3"),
+        default="v1",
+        help="Explanation strategy to use (v1 or v3)",
+    )
     parser.add_argument("--lr", type=float, default=0.1, help="Explainer learning rate")
     parser.add_argument(
         "--n-momentum",
@@ -180,6 +186,7 @@ def main() -> None:
             beta=args.beta,
             target_node_sub_idx=target_node_sub_idx,
             device=device,
+            strategy=args.strategy,
         )
 
         node_start = time.time()
