@@ -1,4 +1,36 @@
 import torch
+from torch import Tensor
+from typing import Any
+
+
+def build_incidence_matrix(edge_index: Tensor, num_nodes: int) -> torch.Tensor:
+    """
+    Convert CORA's edge_index to a hypergraph incidence matrix.
+    Each node defines a hyperedge containing itself and its first-order neighbors.
+    """
+    edge_index = edge_index.cpu()
+    row, col = edge_index
+
+    adjacency = [set[Any]() for _ in range(num_nodes)]
+    for src, dst in zip(row.tolist(), col.tolist()):
+        adjacency[src].add(dst)
+        adjacency[dst].add(src)
+
+    rows, cols = [], []
+    for hyperedge_id in range(num_nodes):
+        hyper_nodes = set(adjacency[hyperedge_id])
+        hyper_nodes.add(hyperedge_id)
+        for node_id in hyper_nodes:
+            rows.append(node_id)
+            cols.append(hyperedge_id)
+
+    row_idx = torch.tensor(rows, dtype=torch.long)
+    col_idx = torch.tensor(cols, dtype=torch.long)
+    values = torch.ones(len(rows), dtype=torch.float32)
+
+    H = torch.zeros((num_nodes, num_nodes), dtype=torch.float32)
+    H[row_idx, col_idx] = values
+    return H
 
 
 def normalize_propagation(H: torch.Tensor) -> torch.Tensor:
@@ -23,22 +55,6 @@ def normalize_propagation(H: torch.Tensor) -> torch.Tensor:
     S = D_inv_sqrt @ H @ B_inv @ H.t() @ D_inv_sqrt
 
     return S
-
-
-# def normalize_propagation(H: torch.Tensor) -> torch.Tensor:
-#     D = H.sum(dim=1)
-#     D = torch.diag(D)
-#     D_inv_sqrt = D.pow(-0.5)
-#     D_inv_sqrt[torch.isinf(D_inv_sqrt)] = 0.0
-
-#     B = H.sum(dim=0)
-#     B = torch.diag(B)
-#     B_inv = B.pow(-1.0)
-#     B_inv[torch.isinf(B_inv)] = 0.0
-
-#     S = D_inv_sqrt @ H @ B_inv @ H.t() @ D_inv_sqrt
-
-#     return S
 
 
 def get_hyper_neighbourhood(node_idx, H, n_hops, features, labels):
