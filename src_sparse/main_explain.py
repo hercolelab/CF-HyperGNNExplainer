@@ -11,8 +11,8 @@ from torch_geometric.transforms import NormalizeFeatures
 
 from cf_explanation.cf_explainer import CFExplainer
 from hgcn import HGCN
-from train import build_incidence_matrix
-from utils.utils import (
+from utils import (
+    build_incidence_matrix,
     normalize_propagation,
     # get_hyper_neighbourhood_fast,
     get_hyper_neighbourhood_fast_2,

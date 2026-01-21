@@ -1,5 +1,41 @@
 import torch
-from typing import Tuple, Dict
+from torch import Tensor
+from typing import Tuple, Dict, Any
+
+
+def build_incidence_matrix(
+    edge_index: Tensor, num_nodes: int, device: torch.device = torch.device("cpu")
+) -> torch.Tensor:
+    """
+    Convert CORA's edge_index to a hypergraph incidence matrix (sparse COO format).
+    Each node defines a hyperedge containing itself and its first-order neighbors.
+    """
+    edge_index = edge_index.cpu()
+    row, col = edge_index
+
+    adjacency = [set[Any]() for _ in range(num_nodes)]
+    for src, dst in zip(row.tolist(), col.tolist()):
+        adjacency[src].add(dst)
+        adjacency[dst].add(src)
+
+    rows, cols = [], []
+    for hyperedge_id in range(num_nodes):
+        hyper_nodes = set(adjacency[hyperedge_id])
+        hyper_nodes.add(hyperedge_id)
+        for node_id in hyper_nodes:
+            rows.append(node_id)
+            cols.append(hyperedge_id)
+
+    row_idx = torch.tensor(rows, dtype=torch.long)
+    col_idx = torch.tensor(cols, dtype=torch.long)
+    indices = torch.stack([row_idx, col_idx], dim=0)
+    values = torch.ones(len(rows), dtype=torch.float32)
+
+    H = torch.sparse_coo_tensor(
+        indices, values, (num_nodes, num_nodes), dtype=torch.float32, device=device
+    ).coalesce()
+
+    return H
 
 
 def normalize_propagation(H: torch.sparse_coo_tensor) -> torch.sparse_coo_tensor:
@@ -61,123 +97,6 @@ def normalize_propagation(H: torch.sparse_coo_tensor) -> torch.sparse_coo_tensor
 
 def bool_to_col(vec_bool, H):
     return vec_bool.to(dtype=H.dtype).view(-1, 1)
-
-
-# def get_hyper_neighbourhood_fast(
-#     node_idx: int,
-#     H: torch.sparse_coo_tensor,
-#     n_hops: int,
-#     features: torch.Tensor,
-#     labels: torch.Tensor,
-# ) -> Tuple[torch.sparse_coo_tensor, torch.Tensor, torch.Tensor, Dict[int, int]]:
-#     """
-#     Extract k-hop neighborhood subgraph from hypergraph incidence matrix (faster).
-
-#     This uses bipartite propagation (node -> hyperedge -> node) with sparse-dense matmul
-#     and avoids materializing HH^T or using torch.isin over large index arrays.
-
-#     Returns: (sub_H, sub_feat, sub_labels, node_dict)
-#     """
-#     device = features.device
-
-#     if not H.is_sparse:
-#         H = H.to_sparse()
-#     H = H.to(device).coalesce()
-
-#     N = H.size(0)
-#     E = H.size(1)
-
-#     if node_idx < 0 or node_idx >= N:
-#         raise IndexError("node_idx out of range")
-
-#     visited = torch.zeros(N, dtype=torch.bool, device=device)
-#     current_bool = torch.zeros(N, dtype=torch.bool, device=device)
-#     current_bool[node_idx] = True
-#     visited[node_idx] = True
-
-#     for _ in range(n_hops):
-#         if not current_bool.any():
-#             break
-
-#         current_vec = bool_to_col(current_bool, H)  # shape (N,1)
-#         e_scores = torch.sparse.mm(H.transpose(0, 1), current_vec)  # dense (E,1)
-#         e_mask = e_scores.view(-1) > 0  # which hyperedges are incident
-
-#         if not e_mask.any():
-#             break
-
-#         e_vec = bool_to_col(e_mask, H)  # (E,1)
-#         node_scores = torch.sparse.mm(H, e_vec)  # dense (N,1)
-#         next_bool = node_scores.view(-1) > 0
-
-#         new_nodes = next_bool & (~visited)
-#         visited |= next_bool
-
-#         if not new_nodes.any():
-#             break
-
-#         current_bool = new_nodes
-
-#     nodes = visited.nonzero(as_tuple=False).view(-1)
-#     if nodes.numel() == 0:
-#         empty_idx = torch.zeros((2, 0), dtype=torch.long, device=device)
-#         empty_vals = torch.zeros((0,), dtype=H.dtype, device=device)
-#         return (
-#             torch.sparse_coo_tensor(
-#                 empty_idx, empty_vals, (0, 0), device=device, dtype=H.dtype
-#             ),
-#             features[[]],
-#             labels[[]],
-#             {},
-#         )
-
-#     H_indices = H.indices()
-#     H_values = H.values()
-#     H_rows = H_indices[0]
-#     H_cols = H_indices[1]
-
-#     row_mask = visited[H_rows]
-#     sub_H_rows_orig = H_rows[row_mask]
-#     sub_H_cols_orig = H_cols[row_mask]
-#     sub_H_values = H_values[row_mask]
-
-#     node_to_sub_idx = torch.full((N,), -1, dtype=torch.long, device=device)
-#     node_to_sub_idx[nodes] = torch.arange(
-#         nodes.numel(), device=device, dtype=torch.long
-#     )
-#     sub_H_rows = node_to_sub_idx[sub_H_rows_orig]
-
-#     if sub_H_cols_orig.numel() > 0:
-#         unique_edges = torch.unique(sub_H_cols_orig)
-#         edge_to_sub_idx = torch.full((E,), -1, dtype=torch.long, device=device)
-#         edge_to_sub_idx[unique_edges] = torch.arange(
-#             unique_edges.numel(), device=device, dtype=torch.long
-#         )
-#         sub_H_cols = edge_to_sub_idx[sub_H_cols_orig]
-
-#         sub_H_indices = torch.stack([sub_H_rows, sub_H_cols], dim=0)
-#         sub_H = torch.sparse_coo_tensor(
-#             sub_H_indices,
-#             sub_H_values,
-#             (nodes.numel(), unique_edges.numel()),
-#             device=device,
-#             dtype=H.dtype,
-#         ).coalesce()
-#     else:
-#         sub_H = torch.sparse_coo_tensor(
-#             torch.zeros((2, 0), dtype=torch.long, device=device),
-#             torch.zeros(0, dtype=H.dtype, device=device),
-#             (nodes.numel(), 0),
-#             device=device,
-#             dtype=H.dtype,
-#         )
-
-#     sub_feat = features[nodes]
-#     sub_labels = labels[nodes]
-
-#     node_dict = {int(orig): int(i) for i, orig in enumerate(nodes.cpu().numpy())}
-
-#     return sub_H, sub_feat, sub_labels, node_dict
 
 
 def get_hyper_neighbourhood_fast_2(
