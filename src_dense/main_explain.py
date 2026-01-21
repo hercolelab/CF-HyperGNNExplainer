@@ -9,8 +9,11 @@ from torch_geometric.transforms import NormalizeFeatures
 
 from cf_explanation.cf_explainer import CFExplainer
 from hgcn import HGCN
-from train import build_incidence_matrix
-from utils.utils import get_hyper_neighbourhood, normalize_propagation
+from utils import (
+    build_incidence_matrix,
+    get_hyper_neighbourhood,
+    normalize_propagation,
+)
 
 
 def parse_args() -> argparse.Namespace:
