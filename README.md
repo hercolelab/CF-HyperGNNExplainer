@@ -1,6 +1,6 @@
 # CF-HyperGNNExplainer
 
-## Project structure in README.md
+## Project structure
 
 - `src_sparse/` — sparse variant (main entry points: `src_sparse/train.py`, `src_sparse/main_explain.py`).
 - `src_dense/` — dense variant (same entry points).
