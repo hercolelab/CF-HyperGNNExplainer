@@ -86,10 +86,10 @@ class CFExplainer:
             if name.endswith("weight") or name.endswith("bias"):
                 param.requires_grad = False
 
-        for name, param in self.model.named_parameters():
-            print("orig model requires_grad: ", name, param.requires_grad)
-        for name, param in self.cf_model.named_parameters():
-            print("cf model requires_grad: ", name, param.requires_grad)
+        #for name, param in self.model.named_parameters():
+        #    print("orig model requires_grad: ", name, param.requires_grad)
+        #for name, param in self.cf_model.named_parameters():
+        #    print("cf model requires_grad: ", name, param.requires_grad)
 
         self.node_idx: int = -1
         self.new_idx: int = -1
@@ -142,6 +142,15 @@ class CFExplainer:
 
         for epoch in tqdm(range(num_epochs), desc="Training epochs"):
             new_example, loss_total, grad_is_zero, current_pred = self.train(epoch)
+
+            # If the CF model determined there are no further editable
+            # node-hyperedge interactions for the target, stop searching.
+            if getattr(self.cf_model, "no_available_edits", False):
+                print("Stopping search: there are no available edits for target node. Node is isolated in the hypergraph.")
+                break
+            if getattr(self.cf_model, "no_more_edits", False):
+                print("Stopping search: no more editable interactions for target node.")
+                break
 
             if new_example and loss_total < best_loss:
                 best_cf_example.append(new_example)

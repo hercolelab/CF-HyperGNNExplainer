@@ -116,20 +116,34 @@ def main() -> None:
     device = resolve_device(args.device)
     print(f"Using device: {device}")
 
-    dataset = Planetoid(
-        root=os.path.join(os.path.dirname(__file__), "..", "data", "Planetoid"),
-        name=args.dataset,
-        transform=NormalizeFeatures(),
-    )
-    data = dataset[0].to(device)
+    # Use Planetoid for Cora/Citeseer/Pubmed, otherwise load from AllSet
+    if args.dataset in ("Cora", "Citeseer", "Pubmed"):
+        dataset = Planetoid(
+            root=os.path.join(os.path.dirname(__file__), "..", "data", "Planetoid"),
+            name=args.dataset,
+            transform=NormalizeFeatures(),
+        )
+        data = dataset[0].to(device)
+        H = build_incidence_matrix(data.edge_index, data.num_nodes, device=device)
+        nfeat = dataset.num_features
+        nclass = dataset.num_classes
+    else:
+        from utils.allset_loader import load_allset_dataset
 
-    H = build_incidence_matrix(data.edge_index, data.num_nodes, device=device)
+        data, H = load_allset_dataset(args.dataset, device=device)
+        data.x = data.x.to(device)
+        data.y = data.y.to(device)
+        data.train_mask = data.train_mask.to(device)
+        data.val_mask = data.val_mask.to(device)
+        data.test_mask = data.test_mask.to(device)
+        nfeat = int(data.x.size(1))
+        nclass = int(int(data.y.max().item()) + 1)
 
     model = HGCN(
-        nfeat=dataset.num_features,
+        nfeat=nfeat,
         nhid=args.nhid,
         nout=args.nout,
-        nclass=dataset.num_classes,
+        nclass=nclass,
         dropout=args.dropout,
     ).to(device)
 
@@ -158,6 +172,8 @@ def main() -> None:
 
     cf_examples_per_node: list[list] = []
     num_successful = 0
+    possible_trials = 0
+    isolated_nodes = 0
     total_start = time.time()
 
     for target_node in target_nodes:
@@ -189,6 +205,20 @@ def main() -> None:
             strategy=args.strategy,
         )
 
+        # Check whether the target node has any incident hyperedges in the
+        # extracted subgraph (i.e., whether any node-hyperedge edits are
+        # available). If there are none, the explainer cannot produce a CF.
+        sub_H_coalesced = sub_H.coalesce()
+        H_indices = sub_H_coalesced.indices()
+        row_mask = H_indices[0] == target_node_sub_idx
+        available_edges = H_indices[1][row_mask]
+        initial_available = available_edges.numel() > 0
+        if not initial_available:
+            print(
+                f"Target node {target_node} has no incident edges in the extracted subgraph. No edits are available."
+            )
+            isolated_nodes += 1
+            continue
         node_start = time.time()
         best_cf_examples = explainer.explain(
             cf_optimizer=args.cf_optimizer,
@@ -198,6 +228,13 @@ def main() -> None:
             n_momentum=args.n_momentum,
             num_epochs=args.num_epochs,
         )
+        # Determine whether this node was a valid "possible" trial: it must
+        # have had available edits and the explainer must not have stopped
+        # because there were no more editable interactions.
+        no_more_edits_flag = getattr(explainer.cf_model, "no_more_edits", False)
+        possible = not no_more_edits_flag
+        if possible:
+            possible_trials += 1
         node_elapsed = time.time() - node_start
         print(f"Node {target_node} run time: {node_elapsed:.2f}s")
 
@@ -228,7 +265,9 @@ def main() -> None:
     total_elapsed = time.time() - total_start
     print(f"\nTotal explainer run time: {total_elapsed:.2f}s")
     num_targets = len(target_nodes)
-    print(f"Counterfactual examples found for {num_successful}/{num_targets} node(s).")
+    print(f"Isolated Nodes: {isolated_nodes}/{num_targets}")
+    print(f"Nodes where counterfactuals were possible: {possible_trials}/{num_targets}")
+    print(f"Counterfactual examples found: {num_successful}/{possible_trials} (successful/possible)")
 
     if cf_examples_per_node:
         if args.output_path:

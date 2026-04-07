@@ -167,20 +167,35 @@ def main():
 
     print(f"Using device: {device}")
 
-    data_root = os.path.join(os.path.dirname(__file__), "..", "data", "Planetoid")
-    dataset = Planetoid(
-        root=data_root, name=args.dataset, transform=NormalizeFeatures()
-    )
-    data = dataset[0].to(device)
+    # Use Planetoid for Cora/Citeseer/Pubmed, otherwise load from AllSet
+    if args.dataset in ("Cora", "Citeseer", "Pubmed"):
+        dataset = Planetoid(
+            root=os.path.join(os.path.dirname(__file__), "..", "data", "Planetoid"),
+            name=args.dataset,
+            transform=NormalizeFeatures(),
+        )
+        data = dataset[0].to(device)
+        H = build_incidence_matrix(data.edge_index, data.num_nodes, device=device)
+        nfeat = dataset.num_features
+        nclass = dataset.num_classes
+    else:
+        from utils.allset_loader import load_allset_dataset
 
-    H = build_incidence_matrix(data.edge_index, data.num_nodes, device=device)
+        data, H = load_allset_dataset(args.dataset, device=device)
+        data.x = data.x.to(device)
+        data.y = data.y.to(device)
+        data.train_mask = data.train_mask.to(device)
+        data.val_mask = data.val_mask.to(device)
+        data.test_mask = data.test_mask.to(device)
+        nfeat = int(data.x.size(1))
+        nclass = int(int(data.y.max().item()) + 1)
     S = normalize_propagation(H)
 
     model = HGCN(
-        nfeat=dataset.num_features,
+        nfeat=nfeat,
         nhid=args.hidden,
         nout=args.out_hidden,
-        nclass=dataset.num_classes,
+        nclass=nclass,
         dropout=args.dropout,
     ).to(device)
 
@@ -231,6 +246,7 @@ def main():
             [
                 sanitize_checkpoint_name(args.model_name),
                 f"seed{args.seed}",
+                f"dataset{args.dataset}",
                 f"epochs{epochs}",
                 f"lr{args.learning_rate:g}",
                 f"nhid{args.hidden}",
