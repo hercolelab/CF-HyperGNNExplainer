@@ -112,7 +112,7 @@ class HGCN_Perturb(nn.Module):
         num_nodes, num_edges = self.H.shape
 
         self.pi_i_hat = nn.Parameter(
-            torch.ones(num_edges, device=H.device), requires_grad=True
+            torch.full((num_edges,), 10.0, device=H.device), requires_grad=True
         )
 
         self.pi_i = None
@@ -121,6 +121,14 @@ class HGCN_Perturb(nn.Module):
         # meaning there are no more editable interactions for this node.
         self.no_more_edits = False
         self.no_available_edits = False  # Flag for the case where the target has no incident edges at all
+
+    def reset_perturbation(self) -> None:
+        with torch.no_grad():
+            self.pi_i_hat.fill_(10.0)
+        self.pi_i = None
+        self.H_tilde = None
+        self.no_more_edits = False
+        self.no_available_edits = False
 
     def forward(self, x, sub_H):
         sub_H = sub_H.coalesce()

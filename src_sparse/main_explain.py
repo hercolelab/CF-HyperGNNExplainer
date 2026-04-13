@@ -19,6 +19,10 @@ from utils import (
 )
 
 
+INCREMENTAL_BETA_MODE = "incremental"
+DYNAMIC_LR_MODE = "dynamic"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run CF-HyperGNNExplainer on a pretrained HGCN model"
@@ -38,7 +42,13 @@ def parse_args() -> argparse.Namespace:
         "--n-hops", type=int, default=4, help="Neighborhood radius for the explainer"
     )
     parser.add_argument(
-        "--beta", type=float, default=0.5, help="Weight for the graph-distance loss"
+        "--beta",
+        type=str,
+        default="0.5",
+        help=(
+            "Graph-distance loss weight as a float string, or 'incremental' "
+            "to search the largest valid beta per node"
+        ),
     )
     parser.add_argument(
         "--cf-optimizer",
@@ -52,7 +62,15 @@ def parse_args() -> argparse.Namespace:
         default="v1",
         help="Explanation strategy to use (v1 or v3)",
     )
-    parser.add_argument("--lr", type=float, default=0.1, help="Explainer learning rate")
+    parser.add_argument(
+        "--lr",
+        type=str,
+        default="0.1",
+        help=(
+            "Explainer learning rate as a float string, or 'dynamic' to "
+            "derive it from the initial gradient for each node"
+        ),
+    )
     parser.add_argument(
         "--n-momentum",
         type=float,
@@ -99,6 +117,45 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def parse_scalar_or_mode(
+    raw_value: str,
+    *,
+    arg_name: str,
+    special_mode: str,
+) -> float | str:
+    value = raw_value.strip()
+    if value.lower() == special_mode:
+        return special_mode
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{arg_name} must be a float string or '{special_mode}', got {raw_value!r}."
+        ) from exc
+
+
+def parse_beta_setting(beta_arg: str) -> float | str:
+    beta_setting = parse_scalar_or_mode(
+        beta_arg,
+        arg_name="--beta",
+        special_mode=INCREMENTAL_BETA_MODE,
+    )
+    if isinstance(beta_setting, float) and beta_setting < 0.0:
+        raise ValueError("--beta must be non-negative.")
+    return beta_setting
+
+
+def parse_lr_setting(lr_arg: str) -> float | str:
+    lr_setting = parse_scalar_or_mode(
+        lr_arg,
+        arg_name="--lr",
+        special_mode=DYNAMIC_LR_MODE,
+    )
+    if isinstance(lr_setting, float) and lr_setting < 0.0:
+        raise ValueError("--lr must be non-negative.")
+    return lr_setting
+
+
 def resolve_device(device_arg: str) -> torch.device:
     if device_arg == "auto":
         return (
@@ -113,8 +170,22 @@ def resolve_device(device_arg: str) -> torch.device:
 
 def main() -> None:
     args = parse_args()
+    try:
+        beta_setting = parse_beta_setting(args.beta)
+        lr_setting = parse_lr_setting(args.lr)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
     device = resolve_device(args.device)
     print(f"Using device: {device}")
+    if isinstance(beta_setting, float):
+        print(f"Using fixed beta: {beta_setting:.6g}")
+    else:
+        print("Using incremental beta search.")
+    if isinstance(lr_setting, float):
+        print(f"Using fixed explainer learning rate: {lr_setting:.6g}")
+    else:
+        print("Using dynamic per-epoch explainer learning rates.")
 
     # Use Planetoid for Cora/Citeseer/Pubmed, otherwise load from AllSet
     if args.dataset in ("Cora", "Citeseer", "Pubmed"):
@@ -193,13 +264,14 @@ def main() -> None:
         sub_labels = sub_labels.to(device)
 
         target_node_sub_idx = node_dict[target_node]
+        initial_beta = 0.0 if beta_setting == INCREMENTAL_BETA_MODE else float(beta_setting)
         explainer = CFExplainer(
             model=model,
             sub_H=sub_H,
             sub_feat=sub_feat,
             sub_labels=sub_labels,
             y_pred_orig=y_pred_orig,
-            beta=args.beta,
+            beta=initial_beta,
             target_node_sub_idx=target_node_sub_idx,
             device=device,
             strategy=args.strategy,
@@ -219,20 +291,43 @@ def main() -> None:
             )
             isolated_nodes += 1
             continue
+
+        node_lr = lr_setting
+        if isinstance(node_lr, float):
+            print(f"Fixed learning rate for target node {target_node}: {node_lr:.6g}")
+        else:
+            print(
+                f"Using dynamic learning rate updates for target node {target_node}."
+            )
+
         node_start = time.time()
-        best_cf_examples = explainer.explain(
-            cf_optimizer=args.cf_optimizer,
-            node_idx=target_node,
-            new_idx=target_node_sub_idx,
-            lr=args.lr,
-            n_momentum=args.n_momentum,
-            num_epochs=args.num_epochs,
-        )
-        # Determine whether this node was a valid "possible" trial: it must
-        # have had available edits and the explainer must not have stopped
-        # because there were no more editable interactions.
-        no_more_edits_flag = getattr(explainer.cf_model, "no_more_edits", False)
-        possible = not no_more_edits_flag
+        if beta_setting == INCREMENTAL_BETA_MODE:
+            best_cf_examples, possible, selected_beta = explainer.run_incremental_beta_search(
+                cf_optimizer=args.cf_optimizer,
+                node_idx=target_node,
+                new_idx=target_node_sub_idx,
+                lr=node_lr,
+                n_momentum=args.n_momentum,
+                num_epochs=args.num_epochs,
+            )
+        else:
+            selected_beta = float(beta_setting)
+            print(
+                f"Running counterfactual search for target node {target_node} "
+                f"with beta={selected_beta:.6g} and "
+                f"lr={'dynamic' if isinstance(node_lr, str) else f'{node_lr:.6g}'}"
+                "."
+            )
+            best_cf_examples = explainer.explain(
+                cf_optimizer=args.cf_optimizer,
+                node_idx=target_node,
+                new_idx=target_node_sub_idx,
+                lr=node_lr,
+                n_momentum=args.n_momentum,
+                num_epochs=args.num_epochs,
+            )
+            possible = not explainer.cf_model.no_more_edits
+
         if possible:
             possible_trials += 1
         node_elapsed = time.time() - node_start
@@ -244,6 +339,14 @@ def main() -> None:
             )
             cf_examples_per_node.append([])
             continue
+
+        print(f"Selected beta for target node {target_node}: {selected_beta:.6g}")
+        if isinstance(node_lr, float):
+            print(f"Learning rate for target node {target_node}: {node_lr:.6g}")
+        else:
+            print(
+                f"Learning rate mode for target node {target_node}: dynamic (recomputed each epoch)"
+            )
 
         best_stats = best_cf_examples[-1]
         cf_H_sparse = best_stats[2]

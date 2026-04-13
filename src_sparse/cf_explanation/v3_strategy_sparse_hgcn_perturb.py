@@ -117,6 +117,16 @@ class HGCN_Perturb(nn.Module):
 
         self.pi_i = None
         self.H_tilde = None
+        self.no_more_edits = False
+        self.no_available_edits = False
+
+    def reset_perturbation(self) -> None:
+        with torch.no_grad():
+            self.pi_i_hat.fill_(1.0)
+        self.pi_i = None
+        self.H_tilde = None
+        self.no_more_edits = False
+        self.no_available_edits = False
 
     def forward(self, x, sub_H):
         sub_H = sub_H.coalesce()

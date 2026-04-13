@@ -290,6 +290,7 @@ def main() -> None:
                     print(f"  num_nodes: {data.num_nodes}")
                     print(f"  x.shape: {tuple(data.x.shape)}")
                     print(f"  y.shape: {tuple(data.y.shape)}")
+                    print(f"  dataset.num_classes: {int(data.y.unique().numel())}")
                     if hasattr(data, "train_mask"):
                         t = int(data.train_mask.sum().item())
                         v = int(data.val_mask.sum().item())
