@@ -17,7 +17,7 @@ from .v3_strategy_sparse_hgcn_perturb import HGCN_Perturb as HGCN_Perturb_v3
 
 DEFAULT_INCREMENTAL_BETA_MIN = 1e-6
 DEFAULT_INCREMENTAL_BETA_FACTOR = 2.0
-DEFAULT_INCREMENTAL_BETA_BUDGET = 12
+DEFAULT_INCREMENTAL_BETA_BUDGET = 30
 DEFAULT_INCREMENTAL_BETA_REFINEMENT_RATIO = 1.05
 DEFAULT_DYNAMIC_LR_EPSILON = 1e-8
 
@@ -380,15 +380,20 @@ class CFExplainer:
         self.cf_model.eval()
         self.cf_optimizer.zero_grad()
 
+        # soft mask forward pass to compute losses and gradients
         output = self.cf_model.forward(self.sub_feat, self.sub_H)
 
+        # hard mask forward pass to compute the actual prediction for the new subgraph structure
         output_actual, self.Pi = self.cf_model.forward_pred(self.sub_feat)
 
-        y_pred_new = torch.argmax(output[self.new_idx])
-        y_pred_new_actual = torch.argmax(output_actual[self.new_idx])
+        logits_new = output[self.new_idx]
+        logits_new_actual = output_actual[self.new_idx]
+
+        y_pred_new = torch.argmax(logits_new)
+        y_pred_new_actual = torch.argmax(logits_new_actual)
 
         loss_total, loss_pred, loss_graph_dist, cf_H = self.cf_model.loss(
-            output[self.new_idx], self.y_pred_orig, y_pred_new_actual
+            logits_new, self.y_pred_orig, y_pred_new_actual
         )
         loss_total.backward()
 
@@ -453,6 +458,8 @@ class CFExplainer:
                 float(loss_total.item()),
                 float(loss_pred.item()),
                 float(loss_graph_dist.item()),
+                logits_new.detach().cpu(),
+                logits_new_actual.detach().cpu(),
             ]
 
         return (

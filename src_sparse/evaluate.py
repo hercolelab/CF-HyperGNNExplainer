@@ -97,6 +97,8 @@ def main():
         "loss_total",
         "loss_pred",
         "loss_graph_dist_training",
+        "logits_new",
+        "logits_new_actual",
     ]
 
     df_prep = []
@@ -148,6 +150,26 @@ def main():
             np.std(1 - df["graph_dist"] / df["num_entries"]),
         )
     )
+
+    # check if predictions and logits are consistent
+    print("Checking consistency between predictions and logits...")
+    for i in df.index:
+        y_pred_new = df["y_pred_new"][i]
+        y_pred_new_actual = df["y_pred_new_actual"][i]
+        logits_new = df["logits_new"][i]
+        logits_new_actual = df["logits_new_actual"][i]
+
+        pred_from_logits = torch.argmax(logits_new).item()
+        pred_from_logits_actual = torch.argmax(logits_new_actual).item()
+
+        assert (
+            y_pred_new == pred_from_logits
+        ), f"Inconsistent prediction at index {i}: y_pred_new={y_pred_new}, pred_from_logits={pred_from_logits}"
+        assert (
+            y_pred_new_actual == pred_from_logits_actual
+        ), f"Inconsistent actual prediction at index {i}: y_pred_new_actual={y_pred_new_actual}, pred_from_logits_actual={pred_from_logits_actual}"
+    print("All predictions are consistent with logits.")
+
 
     print(" ")
     print("***************************************************************")
