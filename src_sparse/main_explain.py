@@ -12,10 +12,9 @@ from torch_geometric.transforms import NormalizeFeatures
 from cf_explanation.cf_explainer import CFExplainer
 from hgcn import HGCN
 from utils import (
-    build_incidence_matrix,
+    graph_to_hypergraph,
     normalize_propagation,
-    # get_hyper_neighbourhood_fast,
-    get_hyper_neighbourhood_fast_2,
+    get_hyper_neighbourhood_fast,
 )
 
 
@@ -207,7 +206,7 @@ def main() -> None:
             transform=NormalizeFeatures(),
         )
         data = dataset[0].to(device)
-        H = build_incidence_matrix(data.edge_index, data.num_nodes, device=device)
+        H = graph_to_hypergraph(data.edge_index, data.num_nodes, device=device)
         nfeat = dataset.num_features
         nclass = dataset.num_classes
     else:
@@ -266,7 +265,7 @@ def main() -> None:
         y_pred_orig = y_pred_all[target_node]
         log_prob_orig = y_log_prob_all[target_node]
 
-        sub_H, sub_feat, sub_labels, node_dict = get_hyper_neighbourhood_fast_2(
+        sub_H, sub_feat, sub_labels, node_dict = get_hyper_neighbourhood_fast(
             node_idx=target_node,
             H=H,
             n_hops=args.n_hops,
