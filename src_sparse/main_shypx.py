@@ -7,9 +7,9 @@ import torch
 from torch_geometric.datasets import Planetoid
 from torch_geometric.transforms import NormalizeFeatures
 
-from baselines.get_computation_subhypergraph import get_computation_subhypergraph
+from utils import get_hyper_neighbourhood_fast
 from hgcn import HGCN
-from baselines.shypx import SHypXExplainer
+from baselines.shypx.shypx import SHypXExplainer
 from utils import graph_to_hypergraph
 
 
@@ -163,7 +163,7 @@ def main() -> None:
     for i, node_idx in enumerate(target_nodes):
         print(f"\n=== [{i + 1}/{len(target_nodes)}] Node {node_idx} ===")
 
-        comp_H, sub_feat, _sub_labels, node_dict = get_computation_subhypergraph(
+        comp_H, sub_feat, _sub_labels, node_dict = get_hyper_neighbourhood_fast(
             node_idx=node_idx,
             H=H,
             n_hops=args.n_hops,
