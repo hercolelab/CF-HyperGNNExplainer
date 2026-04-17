@@ -5,6 +5,7 @@ from typing import List
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 
 # Fid⁻_Acc   — fraction of prediction mismatches           (↓ better)
@@ -59,7 +60,7 @@ def compute_metrics(results: List) -> None:
         y_orig = p_orig.argmax().item()
         fid_acc.append(float(y_expl != y_orig))
 
-        kl = (p_expl * (p_expl.log() - p_orig.log())).sum().item()
+        kl = F.kl_div(p_orig.log(), p_expl, reduction="sum").item()
         fid_kl.append(max(kl, 0.0))
 
         # Total variation distance
