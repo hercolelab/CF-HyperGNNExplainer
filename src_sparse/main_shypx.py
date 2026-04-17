@@ -10,7 +10,7 @@ from torch_geometric.transforms import NormalizeFeatures
 from baselines.get_computation_subhypergraph import get_computation_subhypergraph
 from hgcn import HGCN
 from baselines.shypx import SHypXExplainer
-from utils import build_incidence_matrix
+from utils import graph_to_hypergraph
 
 
 def parse_args() -> argparse.Namespace:
@@ -130,7 +130,7 @@ def main() -> None:
         transform=NormalizeFeatures(),
     )
     data = dataset[0].to(device)
-    H = build_incidence_matrix(data.edge_index, data.num_nodes, device=device)
+    H = graph_to_hypergraph(data.edge_index, data.num_nodes, device=device)
 
     model = HGCN(
         nfeat=dataset.num_features,

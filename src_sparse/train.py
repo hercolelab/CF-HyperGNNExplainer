@@ -13,7 +13,7 @@ from torch_geometric.transforms import NormalizeFeatures
 from torch.nn.utils import clip_grad_norm_
 
 
-from utils import normalize_propagation, build_incidence_matrix
+from utils import normalize_propagation, graph_to_hypergraph
 from hgcn import HGCN
 
 
@@ -187,7 +187,7 @@ def main():
             transform=NormalizeFeatures(),
         )
         data = dataset[0].to(device)
-        H = build_incidence_matrix(data.edge_index, data.num_nodes, device=device)
+        H = graph_to_hypergraph(data.edge_index, data.num_nodes, device=device)
         nfeat = dataset.num_features
         nclass = dataset.num_classes
     else:
