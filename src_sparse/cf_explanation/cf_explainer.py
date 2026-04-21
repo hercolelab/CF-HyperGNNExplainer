@@ -34,6 +34,7 @@ class CFExplainer:
         sub_feat: Tensor,
         sub_labels: Tensor,
         y_pred_orig: Tensor,
+        log_prob_orig: Tensor,
         beta: float,
         target_node_sub_idx: int,
         device: torch.device,
@@ -62,6 +63,7 @@ class CFExplainer:
         self.sub_feat = sub_feat
         self.sub_labels = sub_labels
         self.y_pred_orig = y_pred_orig
+        self.log_prob_orig = log_prob_orig
         self.beta = beta
         self.target_node_sub_idx = int(target_node_sub_idx)
         self.device = device
@@ -386,14 +388,14 @@ class CFExplainer:
         # hard mask forward pass to compute the actual prediction for the new subgraph structure
         output_actual, self.Pi = self.cf_model.forward_pred(self.sub_feat)
 
-        logits_new = output[self.new_idx]
-        logits_new_actual = output_actual[self.new_idx]
+        log_prob_new = output[self.new_idx]
+        log_prob_new_actual = output_actual[self.new_idx]
 
-        y_pred_new = torch.argmax(logits_new)
-        y_pred_new_actual = torch.argmax(logits_new_actual)
+        y_pred_new = torch.argmax(log_prob_new)
+        y_pred_new_actual = torch.argmax(log_prob_new_actual)
 
         loss_total, loss_pred, loss_graph_dist, cf_H = self.cf_model.loss(
-            logits_new, self.y_pred_orig, y_pred_new_actual
+            log_prob_new, self.y_pred_orig, y_pred_new_actual
         )
         loss_total.backward()
 
@@ -458,8 +460,9 @@ class CFExplainer:
                 float(loss_total.item()),
                 float(loss_pred.item()),
                 float(loss_graph_dist.item()),
-                logits_new.detach().cpu(),
-                logits_new_actual.detach().cpu(),
+                self.log_prob_orig.detach().cpu(),
+                log_prob_new.detach().cpu(),
+                log_prob_new_actual.detach().cpu(),
             ]
 
         return (

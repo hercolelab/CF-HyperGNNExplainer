@@ -168,6 +168,18 @@ def resolve_device(device_arg: str) -> torch.device:
     return requested_device
 
 
+def resolve_planetoid_root() -> str:
+    script_dir = os.path.abspath(os.path.dirname(__file__))
+    candidates = [
+        os.path.join(script_dir, "data", "Planetoid"),
+        os.path.join(script_dir, "..", "data", "Planetoid"),
+    ]
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return candidates[0]
+
+
 def main() -> None:
     args = parse_args()
     try:
@@ -190,7 +202,7 @@ def main() -> None:
     # Use Planetoid for Cora/Citeseer/Pubmed, otherwise load from AllSet
     if args.dataset in ("Cora", "Citeseer", "Pubmed"):
         dataset = Planetoid(
-            root=os.path.join(os.path.dirname(__file__), "..", "data", "Planetoid"),
+            root=resolve_planetoid_root(),
             name=args.dataset,
             transform=NormalizeFeatures(),
         )
@@ -227,6 +239,7 @@ def main() -> None:
 
     with torch.no_grad():
         out = model(data.x, S)
+        y_log_prob_all = out
         y_pred_all = torch.argmax(out, dim=1)
 
     if args.target_node is None:
@@ -251,6 +264,7 @@ def main() -> None:
         print(f"\n=== Running CF explainer for target node {target_node} ===")
 
         y_pred_orig = y_pred_all[target_node]
+        log_prob_orig = y_log_prob_all[target_node]
 
         sub_H, sub_feat, sub_labels, node_dict = get_hyper_neighbourhood_fast_2(
             node_idx=target_node,
@@ -271,6 +285,7 @@ def main() -> None:
             sub_feat=sub_feat,
             sub_labels=sub_labels,
             y_pred_orig=y_pred_orig,
+            log_prob_orig=log_prob_orig,
             beta=initial_beta,
             target_node_sub_idx=target_node_sub_idx,
             device=device,

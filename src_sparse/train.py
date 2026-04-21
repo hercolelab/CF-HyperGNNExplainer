@@ -55,6 +55,18 @@ def sanitize_checkpoint_name(text: str) -> str:
     return result if result else "model"
 
 
+def resolve_planetoid_root() -> str:
+    script_dir = os.path.abspath(os.path.dirname(__file__))
+    candidates = [
+        os.path.join(script_dir, "data", "Planetoid"),
+        os.path.join(script_dir, "..", "data", "Planetoid"),
+    ]
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return candidates[0]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train HGCN.")
     parser.add_argument(
@@ -170,7 +182,7 @@ def main():
     # Use Planetoid for Cora/Citeseer/Pubmed, otherwise load from AllSet
     if args.dataset in ("Cora", "Citeseer", "Pubmed"):
         dataset = Planetoid(
-            root=os.path.join(os.path.dirname(__file__), "..", "data", "Planetoid"),
+            root=resolve_planetoid_root(),
             name=args.dataset,
             transform=NormalizeFeatures(),
         )
