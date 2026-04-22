@@ -201,7 +201,9 @@ def _build_induced_subhypergraph(
     sub_vals = H_vals[entry_mask]
 
     global_to_local_node = torch.full((num_nodes,), -1, dtype=torch.long, device=device)
-    global_to_local_node[subset_node_indices] = torch.arange(num_sub_nodes, device=device)
+    global_to_local_node[subset_node_indices] = torch.arange(
+        num_sub_nodes, device=device
+    )
     new_sub_rows = global_to_local_node[raw_sub_rows]
 
     if raw_sub_cols.numel() == 0:
@@ -233,7 +235,10 @@ def _subset_features_and_map(
     sub_feat = features[subset_node_indices]
     sub_labels = labels[subset_node_indices]
     subset_nodes_cpu = subset_node_indices.cpu().numpy()
-    node_dict = {int(global_idx): local_idx for local_idx, global_idx in enumerate(subset_nodes_cpu)}
+    node_dict = {
+        int(global_idx): local_idx
+        for local_idx, global_idx in enumerate(subset_nodes_cpu)
+    }
     return sub_feat, sub_labels, node_dict
 
 
