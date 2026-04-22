@@ -47,13 +47,15 @@ class HGCN(nn.Module):
         self.linear = nn.Linear(nhid + nhid + nout, nclass)
         self.dropout = dropout
 
-    def forward(self, x, S):
+    def forward(self, x, S, return_embeddings: bool = False):
         x1 = F.leaky_relu(self.conv1(x, S))
         x1 = F.dropout(x1, self.dropout, training=self.training)
         x2 = F.leaky_relu(self.conv2(x1, S))
         x2 = F.dropout(x2, self.dropout, training=self.training)
         x3 = self.conv3(x2, S)
         x = self.linear(torch.cat((x1, x2, x3), dim=1))
+        if return_embeddings:
+            return x
         return F.log_softmax(x, dim=1)
 
     def loss(self, pred, target):
@@ -74,4 +76,4 @@ class HGCN(nn.Module):
 #     model = HGCN(3, 2, 2, 5, 0.5)
 
 #     out = model(torch.randn(6, 3), S)
-#     print(out)
+#     print(out.shape)
