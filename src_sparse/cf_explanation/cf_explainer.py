@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch import Tensor
 from torch.nn.utils import clip_grad_norm_
+from utils import normalize_propagation
 
 
 from .v1_strategy_sparse_hgcn_perturb import HGCN_Perturb as HGCN_Perturb_v1
@@ -109,6 +110,62 @@ class CFExplainer:
     def set_beta(self, beta: float) -> None:
         self.beta = float(beta)
         self.cf_model.beta = self.beta
+
+    def build_removed_incidence(self, cf_H: Tensor) -> Tensor:
+        sub_H = self.sub_H.coalesce()
+        cf_H = cf_H.coalesce()
+
+        if sub_H.shape != cf_H.shape:
+            raise ValueError(
+                "The counterfactual incidence matrix must have the same shape as the original subgraph."
+            )
+
+        sub_indices = sub_H.indices()
+        cf_indices = cf_H.indices()
+        # This helper assumes the perturbation strategies preserve the original
+        # sparse COO index pattern and only zero-out removed incidences in the
+        # stored values. If a future refactor drops removed incidences from the
+        # COO indices entirely, this direct value-wise subtraction is no longer
+        # valid and the two sparse tensors must be aligned by index first.
+        if not torch.equal(sub_indices, cf_indices):
+            raise ValueError(
+                "The counterfactual incidence matrix must preserve the original sparse index pattern. "
+                "This helper assumes removed incidences remain as explicit zero-valued COO entries; "
+                "if they are dropped from the sparse indices, the sparse tensors must be aligned by "
+                "index before subtraction."
+            )
+
+        removed_values = sub_H.values() - cf_H.values()
+        removed_mask = removed_values != 0
+
+        if not torch.any(removed_mask):
+            empty_indices = torch.empty(
+                (2, 0),
+                dtype=sub_indices.dtype,
+                device=sub_H.device,
+            )
+            empty_values = torch.empty(
+                (0,),
+                dtype=sub_H.dtype,
+                device=sub_H.device,
+            )
+            return torch.sparse_coo_tensor(
+                empty_indices,
+                empty_values,
+                sub_H.size(),
+                device=sub_H.device,
+                dtype=sub_H.dtype,
+            ).coalesce()
+
+        removed_indices = sub_indices[:, removed_mask]
+        removed_values = removed_values[removed_mask]
+        return torch.sparse_coo_tensor(
+            removed_indices,
+            removed_values,
+            sub_H.size(),
+            device=sub_H.device,
+            dtype=sub_H.dtype,
+        ).coalesce()
 
     def compute_dynamic_lr(self, num_epochs: int, epsilon: float = 1e-8) -> float:
         if num_epochs <= 0:
@@ -447,6 +504,12 @@ class CFExplainer:
             else:
                 sub_H_stored = self.sub_H.to_sparse().coalesce()
 
+            removed_H = self.build_removed_incidence(cf_H)
+            with torch.no_grad():
+                S_removed = normalize_propagation(removed_H)
+                removed_output = self.model(self.sub_feat, S_removed)
+            log_prob_removed_only = removed_output[self.new_idx]
+
             cf_stats = [
                 int(self.node_idx),
                 int(self.new_idx),
@@ -463,6 +526,7 @@ class CFExplainer:
                 self.log_prob_orig.detach().cpu(),
                 log_prob_new.detach().cpu(),
                 log_prob_new_actual.detach().cpu(),
+                log_prob_removed_only.detach().cpu(),
             ]
 
         return (

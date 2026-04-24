@@ -125,7 +125,35 @@ def format_summary(values) -> str:
     return f"{format_number(mean)} +/- {format_number(std)}"
 
 
+def print_results(csv_header: list[str], csv_values: list[str]) -> None:
+    print(",".join(csv_header))
+    print(",".join(csv_values))
+    print()
+    for key, value in zip(csv_header, csv_values):
+        print(f"{key}: {value}")
+
+
 def get_result_header(example_width: int) -> list[str]:
+    if example_width == 16:
+        return [
+            "node_idx",
+            "new_idx",
+            "cf_H",
+            "sub_H",
+            "y_pred_orig",
+            "y_pred_new",
+            "y_pred_new_actual",
+            "label",
+            "num_nodes",
+            "loss_total",
+            "loss_pred",
+            "loss_graph_dist_training",
+            "log_prob_orig",
+            "log_prob_new",
+            "log_prob_new_actual",
+            "log_prob_removed_only",
+        ]
+
     if example_width == 15:
         return [
             "node_idx",
@@ -175,30 +203,55 @@ def compute_shypx_metrics(df: pd.DataFrame):
         "fid_plus_kl": [],
         "fid_plus_tv": [],
         "fid_plus_xent": [],
+        "fid_minus_acc": [],
+        "fid_minus_kl": [],
+        "fid_minus_tv": [],
+        "fid_minus_xent": [],
     }
 
     eps = 1e-10
+    has_removed_only = "log_prob_removed_only" in df.columns
 
     for i in df.index:
         log_prob_orig = df["log_prob_orig"][i]
-        log_prob_new = df["log_prob_new"][i]
+        log_prob_new_actual = df["log_prob_new_actual"][i]
 
         p_orig = torch.exp(log_prob_orig).clamp(min=eps)
-        p_expl = torch.exp(log_prob_new).clamp(min=eps)
+        p_cf = torch.exp(log_prob_new_actual).clamp(min=eps)
 
         y_pred_orig = df["y_pred_orig"][i]
-        y_pred_expl = df["y_pred_new"][i]
+        y_pred_new_actual = df["y_pred_new_actual"][i]
 
-        metrics["fid_plus_acc"].append(float(y_pred_orig != y_pred_expl))
+        metrics["fid_plus_acc"].append(float(y_pred_orig != y_pred_new_actual))
 
-        kl_div = F.kl_div(p_orig.log(), p_expl, reduction="sum").item()
+        kl_div = F.kl_div(p_orig.log(), p_cf, reduction="sum").item()
         metrics["fid_plus_kl"].append(max(kl_div, 0.0))
 
-        tv_dist = 0.5 * torch.sum(torch.abs(p_expl - p_orig))
+        tv_dist = 0.5 * torch.sum(torch.abs(p_cf - p_orig))
         metrics["fid_plus_tv"].append(tv_dist.item())
 
-        xent = -torch.sum(p_orig * torch.log(p_expl))
+        xent = -torch.sum(p_orig * torch.log(p_cf))
         metrics["fid_plus_xent"].append(xent.item())
+
+        if has_removed_only:
+            log_prob_removed_only = df["log_prob_removed_only"][i]
+            p_removed_only = torch.exp(log_prob_removed_only).clamp(min=eps)
+            y_pred_removed_only = torch.argmax(log_prob_removed_only).item()
+
+            metrics["fid_minus_acc"].append(float(y_pred_orig != y_pred_removed_only))
+
+            kl_div_removed_only = F.kl_div(
+                p_orig.log(), p_removed_only, reduction="sum"
+            ).item()
+            metrics["fid_minus_kl"].append(max(kl_div_removed_only, 0.0))
+
+            tv_dist_removed_only = 0.5 * torch.sum(
+                torch.abs(p_removed_only - p_orig)
+            )
+            metrics["fid_minus_tv"].append(tv_dist_removed_only.item())
+
+            xent_removed_only = -torch.sum(p_orig * torch.log(p_removed_only))
+            metrics["fid_minus_xent"].append(xent_removed_only.item())
 
     return metrics
 
@@ -237,6 +290,10 @@ def main():
         "fid_plus_kl",
         "fid_plus_tv",
         "fid_plus_xent",
+        "fid_minus_acc",
+        "fid_minus_kl",
+        "fid_minus_tv",
+        "fid_minus_xent",
     ]
 
     if df.empty:
@@ -250,9 +307,12 @@ def main():
             "NA",
             "NA",
             "NA",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
         ]
-        print(",".join(csv_header))
-        print(",".join(csv_values))
+        print_results(csv_header, csv_values)
         return
 
     graph_distances = []
@@ -297,6 +357,16 @@ def main():
                 y_pred_new_actual == pred_from_log_prob_actual
             ), f"Inconsistent actual prediction at index {i}: y_pred_new_actual={y_pred_new_actual}, pred_from_log_prob_actual={pred_from_log_prob_actual}"
 
+            if "log_prob_removed_only" in df.columns:
+                log_prob_removed_only = df["log_prob_removed_only"][i]
+                assert (
+                    log_prob_removed_only.shape == log_prob_orig.shape
+                ), f"Inconsistent removed-only log-probability shape at index {i}: removed_only={tuple(log_prob_removed_only.shape)}, original={tuple(log_prob_orig.shape)}"
+                assert torch.isfinite(log_prob_removed_only).all(), (
+                    f"Non-finite removed-only log-probabilities at index {i}: "
+                    f"{log_prob_removed_only}"
+                )
+
     sparsity_values = [
         1 - graph_dist / num_entries if num_entries > 0 else np.nan
         for graph_dist, num_entries in zip(df["graph_dist"], df["num_entries"])
@@ -313,10 +383,13 @@ def main():
         format_summary(shypx_metrics["fid_plus_kl"]) if shypx_metrics else "NA",
         format_summary(shypx_metrics["fid_plus_tv"]) if shypx_metrics else "NA",
         format_summary(shypx_metrics["fid_plus_xent"]) if shypx_metrics else "NA",
+        format_summary(shypx_metrics["fid_minus_acc"]) if shypx_metrics and shypx_metrics["fid_minus_acc"] else "NA",
+        format_summary(shypx_metrics["fid_minus_kl"]) if shypx_metrics and shypx_metrics["fid_minus_kl"] else "NA",
+        format_summary(shypx_metrics["fid_minus_tv"]) if shypx_metrics and shypx_metrics["fid_minus_tv"] else "NA",
+        format_summary(shypx_metrics["fid_minus_xent"]) if shypx_metrics and shypx_metrics["fid_minus_xent"] else "NA",
     ]
 
-    print(",".join(csv_header))
-    print(",".join(csv_values))
+    print_results(csv_header, csv_values)
 
 
 if __name__ == "__main__":
