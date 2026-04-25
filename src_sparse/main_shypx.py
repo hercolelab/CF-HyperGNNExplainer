@@ -7,10 +7,12 @@ import torch
 from torch_geometric.datasets import Planetoid
 from torch_geometric.transforms import NormalizeFeatures
 
-from utils import get_hyper_neighbourhood_fast
 from hgcn import HGCN
 from baselines.shypx.shypx import SHypXExplainer
-from utils import graph_to_hypergraph
+from utils import get_hyper_neighbourhood_fast, graph_to_hypergraph
+
+
+PLANETOID_DATASETS = ("Cora", "Citeseer", "Pubmed")
 
 
 def parse_args() -> argparse.Namespace:
@@ -20,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset",
         default="Cora",
-        help="Name of the Planetoid dataset (Cora, Citeseer, Pubmed)",
+        help="Name of the Planetoid or AllSet dataset",
     )
     parser.add_argument(
         "--target-node",
@@ -119,24 +121,50 @@ def resolve_device(device_arg: str) -> torch.device:
     return dev
 
 
-def main() -> None:
-    args = parse_args()
-    device = resolve_device(args.device)
-    print(f"Using device: {device}")
+def resolve_planetoid_root() -> str:
+    script_dir = os.path.abspath(os.path.dirname(__file__))
+    candidates = [
+        os.path.join(script_dir, "data", "Planetoid"),
+        os.path.join(script_dir, "..", "data", "Planetoid"),
+    ]
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return candidates[0]
 
-    dataset = Planetoid(
-        root=os.path.join(os.path.dirname(__file__), "..", "data", "Planetoid"),
-        name=args.dataset,
-        transform=NormalizeFeatures(),
-    )
-    data = dataset[0].to(device)
-    H = graph_to_hypergraph(data.edge_index, data.num_nodes, device=device)
+
+def load_dataset(dataset_name: str, device: torch.device):
+    if dataset_name in PLANETOID_DATASETS:
+        dataset = Planetoid(
+            root=resolve_planetoid_root(),
+            name=dataset_name,
+            transform=NormalizeFeatures(),
+        )
+        data = dataset[0].to(device)
+        H = graph_to_hypergraph(data.edge_index, data.num_nodes, device=device)
+        return data, H, dataset.num_features, dataset.num_classes
+
+    from utils.allset_loader import load_allset_dataset
+
+    data, H = load_allset_dataset(dataset_name, device=device)
+    data.x = data.x.to(device)
+    data.y = data.y.to(device)
+    data.train_mask = data.train_mask.to(device)
+    data.val_mask = data.val_mask.to(device)
+    data.test_mask = data.test_mask.to(device)
+    nfeat = int(data.x.size(1))
+    nclass = int(int(data.y.max().item()) + 1)
+    return data, H, nfeat, nclass
+
+
+def load_data_and_model(args: argparse.Namespace, device: torch.device):
+    data, H, nfeat, nclass = load_dataset(args.dataset, device)
 
     model = HGCN(
-        nfeat=dataset.num_features,
+        nfeat=nfeat,
         nhid=args.nhid,
         nout=args.nout,
-        nclass=dataset.num_classes,
+        nclass=nclass,
         dropout=args.dropout,
     ).to(device)
 
@@ -144,6 +172,15 @@ def main() -> None:
     checkpoint = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
+    return data, H, model, nclass
+
+
+def main() -> None:
+    args = parse_args()
+    device = resolve_device(args.device)
+    print(f"Using device: {device}")
+
+    data, H, model, _nclass = load_data_and_model(args, device)
 
     if args.target_node is not None:
         if not 0 <= args.target_node < data.num_nodes:
