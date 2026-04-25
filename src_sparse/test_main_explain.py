@@ -10,7 +10,7 @@ import torch
 from torch_geometric.datasets import Planetoid
 from torch_geometric.transforms import NormalizeFeatures
 
-from utils import build_incidence_matrix
+from utils import graph_to_hypergraph
 from utils.allset_loader import load_allset_dataset
 
 
@@ -81,7 +81,7 @@ def load_dataset_and_incidence(dataset_name: str):
             transform=NormalizeFeatures(),
         )
         data = dataset[0]
-        H = build_incidence_matrix(data.edge_index, data.num_nodes, device=device)
+        H = graph_to_hypergraph(data.edge_index, data.num_nodes, device=device)
         return data, H
 
     data, H = load_allset_dataset(dataset_name, device=device)

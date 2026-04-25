@@ -1539,20 +1539,20 @@ def main() -> None:
                     # Build incidence matrix if possible
                     try:
                         try:
-                            from utils import build_incidence_matrix
+                            from utils import graph_to_hypergraph
                         except Exception:
-                            from .utils import build_incidence_matrix  # type: ignore
+                            from .utils import graph_to_hypergraph  # type: ignore
                     except Exception:
                         try:
                             mod = importlib.import_module("src_sparse.utils.utils")
-                            build_incidence_matrix = getattr(mod, "build_incidence_matrix")
+                            graph_to_hypergraph = getattr(mod, "graph_to_hypergraph")
                         except Exception as exc:
-                            print(f"  Could not locate build_incidence_matrix: {exc}")
-                            build_incidence_matrix = None
+                            print(f"  Could not locate graph_to_hypergraph: {exc}")
+                            graph_to_hypergraph = None
 
-                    if build_incidence_matrix is not None:
+                    if graph_to_hypergraph is not None:
                         try:
-                            H = build_incidence_matrix(data.edge_index, data.num_nodes, device=device)
+                            H = graph_to_hypergraph(data.edge_index, data.num_nodes, device=device)
                             print(f"  H shape: {H.shape}, nnz: {_safe_nnzsparse(H)}")
                         except Exception as exc:
                             print(f"  Failed to build incidence matrix: {exc}")
@@ -1640,10 +1640,10 @@ def main() -> None:
             # Hyperedges via incidence matrix
             try:
                 try:
-                    from utils import build_incidence_matrix
+                    from utils import graph_to_hypergraph
                 except Exception:
-                    from .utils import build_incidence_matrix  # type: ignore
-                H = build_incidence_matrix(data.edge_index, data.num_nodes, device=device)
+                    from .utils import graph_to_hypergraph  # type: ignore
+                H = graph_to_hypergraph(data.edge_index, data.num_nodes, device=device)
                 Hc = H.coalesce()
                 idxs = Hc.indices()
                 rows_np = idxs[0].cpu().numpy()
