@@ -120,7 +120,9 @@ class HGCN_Perturb(nn.Module):
         # Flag set when the target's incident masks are essentially all zero
         # meaning there are no more editable interactions for this node.
         self.no_more_edits = False
-        self.no_available_edits = False  # Flag for the case where the target has no incident edges at all
+        self.no_available_edits = (
+            False  # Flag for the case where the target has no incident edges at all
+        )
 
     def reset_perturbation(self) -> None:
         with torch.no_grad():
@@ -197,11 +199,15 @@ class HGCN_Perturb(nn.Module):
         # Extract the original incidence values and the corresponding edge
         # indices for the target node. This is robust to isolated nodes.
         row_vals, col_indices = extract_sparse_row(self.H, self.target_node)
-        print(f"Target node {self.target_node} has {col_indices.numel()} incident hyperedges.")
+        print(
+            f"Target node {self.target_node} has {col_indices.numel()} incident hyperedges."
+        )
         if col_indices.numel() == 0:
             # No incident hyperedges for the target: no graph distance
             loss_graph_dist = torch.tensor(0.0, device=output.device)
-            self.no_available_edits = True  # No edges to edit, so we can stop after this
+            self.no_available_edits = (
+                True  # No edges to edit, so we can stop after this
+            )
         else:
             col_indices = col_indices.to(self.pi_i_hat.device)
             row_vals = row_vals.to(self.pi_i_hat.device)
@@ -213,6 +219,6 @@ class HGCN_Perturb(nn.Module):
             if torch.all(s_target < 1e-3):
                 self.no_more_edits = True
         print(loss_pred.item(), loss_graph_dist.item())
-        #loss = pred_same * loss_pred + self.beta * loss_graph_dist
+        # loss = pred_same * loss_pred + self.beta * loss_graph_dist
         loss = loss_pred + self.beta * loss_graph_dist
         return loss, loss_pred, loss_graph_dist, self.H_tilde

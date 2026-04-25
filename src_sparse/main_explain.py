@@ -277,7 +277,9 @@ def main() -> None:
         sub_labels = sub_labels.to(device)
 
         target_node_sub_idx = node_dict[target_node]
-        initial_beta = 0.0 if beta_setting == INCREMENTAL_BETA_MODE else float(beta_setting)
+        initial_beta = (
+            0.0 if beta_setting == INCREMENTAL_BETA_MODE else float(beta_setting)
+        )
         explainer = CFExplainer(
             model=model,
             sub_H=sub_H,
@@ -310,19 +312,19 @@ def main() -> None:
         if isinstance(node_lr, float):
             print(f"Fixed learning rate for target node {target_node}: {node_lr:.6g}")
         else:
-            print(
-                f"Using dynamic learning rate updates for target node {target_node}."
-            )
+            print(f"Using dynamic learning rate updates for target node {target_node}.")
 
         node_start = time.time()
         if beta_setting == INCREMENTAL_BETA_MODE:
-            best_cf_examples, possible, selected_beta = explainer.run_incremental_beta_search(
-                cf_optimizer=args.cf_optimizer,
-                node_idx=target_node,
-                new_idx=target_node_sub_idx,
-                lr=node_lr,
-                n_momentum=args.n_momentum,
-                num_epochs=args.num_epochs,
+            best_cf_examples, possible, selected_beta = (
+                explainer.run_incremental_beta_search(
+                    cf_optimizer=args.cf_optimizer,
+                    node_idx=target_node,
+                    new_idx=target_node_sub_idx,
+                    lr=node_lr,
+                    n_momentum=args.n_momentum,
+                    num_epochs=args.num_epochs,
+                )
             )
         else:
             selected_beta = float(beta_setting)
@@ -384,7 +386,9 @@ def main() -> None:
     num_targets = len(target_nodes)
     print(f"Isolated Nodes: {isolated_nodes}/{num_targets}")
     print(f"Nodes where counterfactuals were possible: {possible_trials}/{num_targets}")
-    print(f"Counterfactual examples found: {num_successful}/{possible_trials} (successful/possible)")
+    print(
+        f"Counterfactual examples found: {num_successful}/{possible_trials} (successful/possible)"
+    )
 
     if cf_examples_per_node:
         if args.output_path:

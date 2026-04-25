@@ -98,9 +98,9 @@ class CFExplainer:
             if name.endswith("weight") or name.endswith("bias"):
                 param.requires_grad = False
 
-        #for name, param in self.model.named_parameters():
+        # for name, param in self.model.named_parameters():
         #    print("orig model requires_grad: ", name, param.requires_grad)
-        #for name, param in self.cf_model.named_parameters():
+        # for name, param in self.cf_model.named_parameters():
         #    print("cf model requires_grad: ", name, param.requires_grad)
 
         self.node_idx: int = -1
@@ -173,7 +173,9 @@ class CFExplainer:
         epsilon: float = DEFAULT_DYNAMIC_LR_EPSILON,
     ) -> float:
         if num_epochs <= 0:
-            raise ValueError("num_epochs must be positive when computing a dynamic learning rate.")
+            raise ValueError(
+                "num_epochs must be positive when computing a dynamic learning rate."
+            )
 
         original_beta = self.beta
         self.cf_model.reset_perturbation()
@@ -190,7 +192,7 @@ class CFExplainer:
         grad = self.cf_model.pi_i_hat.grad
         grad_norm_sq = 0.0 if grad is None else float(grad.pow(2).sum().item())
         num_classes = int(target_output.size(1))
-        denominator = float(num_epochs -1) if num_epochs > 1 else 1.0
+        denominator = float(num_epochs - 1) if num_epochs > 1 else 1.0
         delta = (0.1 + math.log(max(num_classes, 1))) / denominator
         lr = delta / (grad_norm_sq + epsilon)
 
@@ -292,10 +294,7 @@ class CFExplainer:
             print("No successful positive beta was found; returning beta=0.0.")
             return best_examples, possible, beta_best
 
-        while (
-            trials_used < beta_budget
-            and beta_hi / beta_lo > beta_refinement_ratio
-        ):
+        while trials_used < beta_budget and beta_hi / beta_lo > beta_refinement_ratio:
             beta_mid = math.sqrt(beta_lo * beta_hi)
             print(
                 f"Refining beta in [{beta_lo:.6g}, {beta_hi:.6g}] with "
@@ -399,7 +398,9 @@ class CFExplainer:
             # If the CF model determined there are no further editable
             # node-hyperedge interactions for the target, stop searching.
             if getattr(self.cf_model, "no_available_edits", False):
-                print("Stopping search: there are no available edits for target node. Node is isolated in the hypergraph.")
+                print(
+                    "Stopping search: there are no available edits for target node. Node is isolated in the hypergraph."
+                )
                 break
             if getattr(self.cf_model, "no_more_edits", False):
                 print("Stopping search: no more editable interactions for target node.")

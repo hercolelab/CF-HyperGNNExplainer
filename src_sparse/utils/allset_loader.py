@@ -113,7 +113,9 @@ def _resolve_allset_base_data_dir(base_data_dir: Optional[str]) -> str:
     return candidate
 
 
-def _resolve_allset_dataset_folder(base_data_dir: str, dataset_name: str) -> Tuple[str, str]:
+def _resolve_allset_dataset_folder(
+    base_data_dir: str, dataset_name: str
+) -> Tuple[str, str]:
     base_data_dir = os.path.abspath(base_data_dir)
     normalized_target = _normalize_allset_dataset_name(dataset_name)
 
@@ -225,7 +227,9 @@ def _looks_like_allset_le_dataset(content_path: str, edges_path: str) -> bool:
                 return False
             mapped_edges.append(idx_map[raw_id])
 
-        edge_index = np.asarray(mapped_edges, dtype=np.int64).reshape(edges_unordered.shape).T
+        edge_index = (
+            np.asarray(mapped_edges, dtype=np.int64).reshape(edges_unordered.shape).T
+        )
         if edge_index.shape[0] != 2:
             return False
 
@@ -253,7 +257,9 @@ def _load_allset_le_dataset(
         )
 
     features = np.asarray(idx_features_labels[:, 1:-1], dtype=np.float32)
-    labels_raw = np.asarray(idx_features_labels[:, -1], dtype=np.float64).astype(np.int64)
+    labels_raw = np.asarray(idx_features_labels[:, -1], dtype=np.float64).astype(
+        np.int64
+    )
     idx = np.asarray(idx_features_labels[:, 0], dtype=np.int64)
     idx_map = {raw_id: local_id for local_id, raw_id in enumerate(idx.tolist())}
 
@@ -293,9 +299,9 @@ def _load_allset_le_dataset(
 
     rows = edge_index[0]
     cols = edge_index[1] - num_nodes
-    indices = torch.from_numpy(
-        np.vstack([rows, cols]).astype(np.int64, copy=False)
-    ).to(device)
+    indices = torch.from_numpy(np.vstack([rows, cols]).astype(np.int64, copy=False)).to(
+        device
+    )
     values = torch.ones(len(rows), dtype=torch.float32, device=device)
     H = torch.sparse_coo_tensor(
         indices,
@@ -383,9 +389,13 @@ def load_allset_dataset(
     if content_path is None:
         raise FileNotFoundError(f"No .content file found in {dataset_folder}")
 
-    if edges_path and os.path.isfile(edges_path) and _looks_like_allset_le_dataset(
-        content_path,
-        edges_path,
+    if (
+        edges_path
+        and os.path.isfile(edges_path)
+        and _looks_like_allset_le_dataset(
+            content_path,
+            edges_path,
+        )
     ):
         return _load_allset_le_dataset(dataset_folder, canonical_name, device)
 
@@ -403,7 +413,7 @@ def load_allset_dataset(
                 continue
             try:
                 row_ids.append(int(float(toks[0])))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 row_ids.append(None)
             # Heuristic: skip first token (id or name), take last token as label
             if len(toks) >= 2:
@@ -431,7 +441,9 @@ def load_allset_dataset(
 
     num_nodes = x.size(0)
     row_id_to_local = None
-    if all(row_id is not None for row_id in row_ids) and len(set(row_ids)) == len(row_ids):
+    if all(row_id is not None for row_id in row_ids) and len(set(row_ids)) == len(
+        row_ids
+    ):
         row_id_to_local = {int(row_id): idx for idx, row_id in enumerate(row_ids)}
 
     # Build incidence matrix H (if edges file present)
@@ -465,20 +477,26 @@ def load_allset_dataset(
             idx = torch.arange(num_nodes, dtype=torch.long, device=device)
             indices = torch.stack([idx, idx], dim=0)
             vals = torch.ones(num_nodes, dtype=torch.float32, device=device)
-            H = torch.sparse_coo_tensor(indices, vals, (num_nodes, num_nodes), device=device).coalesce()
+            H = torch.sparse_coo_tensor(
+                indices, vals, (num_nodes, num_nodes), device=device
+            ).coalesce()
         else:
             unique_cols = sorted(list(set(cols_raw)))
             raw_to_local = {r: i for i, r in enumerate(unique_cols)}
             cols = [raw_to_local[r] for r in cols_raw]
             indices = torch.tensor([rows, cols], dtype=torch.long, device=device)
             vals = torch.ones(len(rows), dtype=torch.float32, device=device)
-            H = torch.sparse_coo_tensor(indices, vals, (num_nodes, len(unique_cols)), device=device).coalesce()
+            H = torch.sparse_coo_tensor(
+                indices, vals, (num_nodes, len(unique_cols)), device=device
+            ).coalesce()
     else:
         # No edges file: self hyperedges
         idx = torch.arange(num_nodes, dtype=torch.long, device=device)
         indices = torch.stack([idx, idx], dim=0)
         vals = torch.ones(num_nodes, dtype=torch.float32, device=device)
-        H = torch.sparse_coo_tensor(indices, vals, (num_nodes, num_nodes), device=device).coalesce()
+        H = torch.sparse_coo_tensor(
+            indices, vals, (num_nodes, num_nodes), device=device
+        ).coalesce()
 
     # Create a lightweight PyG-like object
     class SimpleData:
@@ -582,9 +600,7 @@ def _validate_allset_structure_statistics(
     for key, expected_value in expected.items():
         actual_value = actual[key]
         if actual_value != expected_value:
-            mismatches.append(
-                f"{key}: expected {expected_value}, got {actual_value}"
-            )
+            mismatches.append(f"{key}: expected {expected_value}, got {actual_value}")
     return mismatches
 
 
@@ -592,14 +608,10 @@ def _iter_cornell_hyperedges(
     hyperedges_path: str,
     num_nodes: int,
 ) -> list[int]:
-    with open(hyperedges_path, 'r', encoding='utf-8') as f:
+    with open(hyperedges_path, "r", encoding="utf-8") as f:
         for line in f:
             members = sorted(
-                {
-                    int(part)
-                    for part in line.strip().split(',')
-                    if part.strip()
-                }
+                {int(part) for part in line.strip().split(",") if part.strip()}
             )
             members = [member for member in members if 0 <= member < num_nodes]
             if not members:
@@ -607,12 +619,16 @@ def _iter_cornell_hyperedges(
             yield members
 
 
-def load_citation_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/cocitation', dataset = 'cora', train_percent = 0.5):
-    '''
-    this will read the citation dataset from HyperGCN, and convert it edge_list to 
+def load_citation_dataset(
+    path="../data/AllSet_all_raw_data/AllSet_all_raw_data/cocitation",
+    dataset="cora",
+    train_percent=0.5,
+):
+    """
+    this will read the citation dataset from HyperGCN, and convert it edge_list to
     [[ -V- | -E- ]
      [ -E- | -V- ]]
-    '''
+    """
     import pickle
 
     def _resolve_root_dir(raw_path: str) -> str:
@@ -624,14 +640,23 @@ def load_citation_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/
             return candidate
         return raw_path
 
-    def _build_fallback_masks(labels_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _build_fallback_masks(
+        labels_tensor: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         train_mask = torch.zeros(num_nodes, dtype=torch.bool)
         val_mask = torch.zeros(num_nodes, dtype=torch.bool)
         test_mask = torch.zeros(num_nodes, dtype=torch.bool)
 
         num_classes = int(labels_tensor.max().item()) + 1
         for class_idx in range(num_classes):
-            idxs = (labels_tensor == class_idx).nonzero(as_tuple=False).view(-1).cpu().numpy().tolist()
+            idxs = (
+                (labels_tensor == class_idx)
+                .nonzero(as_tuple=False)
+                .view(-1)
+                .cpu()
+                .numpy()
+                .tolist()
+            )
             if not idxs:
                 continue
             rng = np.random.default_rng(seed=42 + class_idx)
@@ -655,7 +680,7 @@ def load_citation_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/
     path = _resolve_root_dir(path)
 
     dataset_dir = None
-    if os.path.isfile(os.path.join(path, 'features.pickle')):
+    if os.path.isfile(os.path.join(path, "features.pickle")):
         dataset_dir = path
     else:
         for candidate_name in (dataset, dataset.lower(), dataset.capitalize()):
@@ -665,19 +690,23 @@ def load_citation_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/
                 break
 
     if dataset_dir is None:
-        raise FileNotFoundError(f"Could not find pickle-backed dataset '{dataset}' under {path}")
+        raise FileNotFoundError(
+            f"Could not find pickle-backed dataset '{dataset}' under {path}"
+        )
 
-    print(f"Loading pickle-backed hypergraph dataset from {os.path.basename(dataset_dir)}")
+    print(
+        f"Loading pickle-backed hypergraph dataset from {os.path.basename(dataset_dir)}"
+    )
 
-    with open(os.path.join(dataset_dir, 'features.pickle'), 'rb') as f:
+    with open(os.path.join(dataset_dir, "features.pickle"), "rb") as f:
         features = pickle.load(f)
-    if hasattr(features, 'toarray'):
+    if hasattr(features, "toarray"):
         features = features.toarray()
     else:
         features = np.asarray(features)
     features = np.asarray(features, dtype=np.float32)
 
-    with open(os.path.join(dataset_dir, 'labels.pickle'), 'rb') as f:
+    with open(os.path.join(dataset_dir, "labels.pickle"), "rb") as f:
         labels = np.asarray(pickle.load(f), dtype=np.int64)
 
     num_nodes, feature_dim = features.shape
@@ -691,13 +720,13 @@ def load_citation_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/
     x = torch.from_numpy(features)
     y = torch.from_numpy(remapped_labels.astype(np.int64, copy=False))
 
-    with open(os.path.join(dataset_dir, 'hypergraph.pickle'), 'rb') as f:
+    with open(os.path.join(dataset_dir, "hypergraph.pickle"), "rb") as f:
         hypergraph = pickle.load(f)
 
     def _hyperedge_sort_key(value):
         try:
             return (0, int(value))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return (1, str(value))
 
     rows = []
@@ -720,7 +749,9 @@ def load_citation_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/
     if rows:
         indices = torch.tensor([rows, cols], dtype=torch.long)
         values = torch.ones(len(rows), dtype=torch.float32)
-        H = torch.sparse_coo_tensor(indices, values, (num_nodes, hyperedge_count)).coalesce()
+        H = torch.sparse_coo_tensor(
+            indices, values, (num_nodes, hyperedge_count)
+        ).coalesce()
     else:
         idx = torch.arange(num_nodes, dtype=torch.long)
         indices = torch.stack([idx, idx], dim=0)
@@ -731,31 +762,31 @@ def load_citation_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/
     val_mask = torch.zeros(num_nodes, dtype=torch.bool)
     test_mask = torch.zeros(num_nodes, dtype=torch.bool)
 
-    split_dir = os.path.join(dataset_dir, 'splits')
+    split_dir = os.path.join(dataset_dir, "splits")
     split_path = None
     if os.path.isdir(split_dir):
         split_files = sorted(
-            [name for name in os.listdir(split_dir) if name.endswith('.pickle')],
+            [name for name in os.listdir(split_dir) if name.endswith(".pickle")],
             key=lambda name: int(os.path.splitext(name)[0]),
         )
         if split_files:
             split_path = os.path.join(split_dir, split_files[0])
 
     if split_path is not None:
-        with open(split_path, 'rb') as f:
+        with open(split_path, "rb") as f:
             split = pickle.load(f)
 
         train_indices = sorted(
             {
                 int(node_idx)
-                for node_idx in split.get('train', [])
+                for node_idx in split.get("train", [])
                 if 0 <= int(node_idx) < num_nodes
             }
         )
         test_indices = sorted(
             {
                 int(node_idx)
-                for node_idx in split.get('test', [])
+                for node_idx in split.get("test", [])
                 if 0 <= int(node_idx) < num_nodes
             }
         )
@@ -764,7 +795,9 @@ def load_citation_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/
         if len(train_indices) > 1:
             rng = np.random.default_rng(seed=42)
             perm = rng.permutation(train_indices)
-            val_size = min(max(1, int(round(len(train_indices) * 0.1))), len(train_indices) - 1)
+            val_size = min(
+                max(1, int(round(len(train_indices) * 0.1))), len(train_indices) - 1
+            )
             val_indices = perm[:val_size].tolist()
             train_indices = perm[val_size:].tolist()
 
@@ -791,11 +824,15 @@ def load_citation_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/
     print(f"number of hyperedges: {data.num_hyperedges}")
     return data, H
 
-def load_yelp_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/yelp', dataset = 'yelp', 
-        name_dictionary_size = 1000,
-        train_percent = 0.5):
-    '''
-    this will read the yelp dataset from source files, and convert it edge_list to 
+
+def load_yelp_dataset(
+    path="../data/AllSet_all_raw_data/AllSet_all_raw_data/yelp",
+    dataset="yelp",
+    name_dictionary_size=1000,
+    train_percent=0.5,
+):
+    """
+    this will read the yelp dataset from source files, and convert it edge_list to
     [[ -V- | -E- ]
      [ -E- | -V- ]]
 
@@ -803,13 +840,13 @@ def load_yelp_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/yelp
 
     node features:
         - latitude, longitude
-        - state, in one-hot coding. 
-        - city, in one-hot coding. 
+        - state, in one-hot coding.
+        - city, in one-hot coding.
         - name, in bag-of-words
 
     node label:
         - average stars from 2-10, converted from original stars which is binned in x.5, min stars = 1
-    '''
+    """
     import re
     import unicodedata
     from collections import Counter
@@ -817,25 +854,36 @@ def load_yelp_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/yelp
     import pandas as pd
 
     def _resolve_dataset_dir(raw_path: str) -> str:
-        if os.path.isfile(os.path.join(raw_path, 'yelp_restaurant_latlong.csv')):
+        if os.path.isfile(os.path.join(raw_path, "yelp_restaurant_latlong.csv")):
             return raw_path
         base_dir = _find_allset_base_dir()
         candidate = os.path.join(base_dir, os.path.basename(os.path.normpath(raw_path)))
-        if os.path.isfile(os.path.join(candidate, 'yelp_restaurant_latlong.csv')):
+        if os.path.isfile(os.path.join(candidate, "yelp_restaurant_latlong.csv")):
             return candidate
         nested_candidate = os.path.join(raw_path, dataset)
-        if os.path.isfile(os.path.join(nested_candidate, 'yelp_restaurant_latlong.csv')):
+        if os.path.isfile(
+            os.path.join(nested_candidate, "yelp_restaurant_latlong.csv")
+        ):
             return nested_candidate
         return raw_path
 
-    def _build_masks(labels_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _build_masks(
+        labels_tensor: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         train_mask = torch.zeros(num_nodes, dtype=torch.bool)
         val_mask = torch.zeros(num_nodes, dtype=torch.bool)
         test_mask = torch.zeros(num_nodes, dtype=torch.bool)
 
         num_classes = int(labels_tensor.max().item()) + 1
         for class_idx in range(num_classes):
-            idxs = (labels_tensor == class_idx).nonzero(as_tuple=False).view(-1).cpu().numpy().tolist()
+            idxs = (
+                (labels_tensor == class_idx)
+                .nonzero(as_tuple=False)
+                .view(-1)
+                .cpu()
+                .numpy()
+                .tolist()
+            )
             if not idxs:
                 continue
             rng = np.random.default_rng(seed=42 + class_idx)
@@ -860,44 +908,73 @@ def load_yelp_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/yelp
     print(f"Loading hypergraph dataset from {os.path.basename(path)}")
 
     latlong = pd.read_csv(
-        os.path.join(path, 'yelp_restaurant_latlong.csv'),
+        os.path.join(path, "yelp_restaurant_latlong.csv"),
         dtype=np.float32,
     ).to_numpy(dtype=np.float32, copy=True)
 
     loc = pd.read_csv(
-        os.path.join(path, 'yelp_restaurant_locations.csv'),
+        os.path.join(path, "yelp_restaurant_locations.csv"),
         dtype=np.int64,
     )
-    state_values = loc['state_int'].to_numpy(dtype=np.int64, copy=True) - 1
-    city_values = loc['city_int'].to_numpy(dtype=np.int64, copy=True) - 1
+    state_values = loc["state_int"].to_numpy(dtype=np.int64, copy=True) - 1
+    city_values = loc["city_int"].to_numpy(dtype=np.int64, copy=True) - 1
     num_nodes = int(loc.shape[0])
 
     names = (
-        pd.read_csv(os.path.join(path, 'yelp_restaurant_name.csv'), keep_default_na=False)['name']
-        .fillna('')
+        pd.read_csv(
+            os.path.join(path, "yelp_restaurant_name.csv"), keep_default_na=False
+        )["name"]
+        .fillna("")
         .astype(str)
         .tolist()
     )
     raw_labels = pd.read_csv(
-        os.path.join(path, 'yelp_restaurant_business_stars.csv'),
+        os.path.join(path, "yelp_restaurant_business_stars.csv"),
         dtype=np.int64,
-    )['business_stars'].to_numpy(dtype=np.int64, copy=True)
+    )["business_stars"].to_numpy(dtype=np.int64, copy=True)
 
-    if num_nodes != int(latlong.shape[0]) or num_nodes != int(len(names)) or num_nodes != int(raw_labels.shape[0]):
+    if (
+        num_nodes != int(latlong.shape[0])
+        or num_nodes != int(len(names))
+        or num_nodes != int(raw_labels.shape[0])
+    ):
         raise ValueError(
             f"Yelp metadata size mismatch: latlong={latlong.shape[0]}, locations={num_nodes}, "
             f"names={len(names)}, labels={raw_labels.shape[0]}"
         )
 
-    token_pattern = re.compile(r'[a-z0-9]+')
+    token_pattern = re.compile(r"[a-z0-9]+")
     stop_words = {
-        'a', 'an', 'and', 'at', 'bar', 'cafe', 'co', 'de', 'for', 'grill', 'in', 'la',
-        'llc', 'of', 'on', 'restaurant', 'shop', 'the', 'to', 'with'
+        "a",
+        "an",
+        "and",
+        "at",
+        "bar",
+        "cafe",
+        "co",
+        "de",
+        "for",
+        "grill",
+        "in",
+        "la",
+        "llc",
+        "of",
+        "on",
+        "restaurant",
+        "shop",
+        "the",
+        "to",
+        "with",
     }
     tokenized_names = []
     token_counts = Counter()
     for name_text in names:
-        normalized = unicodedata.normalize('NFKD', name_text).encode('ascii', 'ignore').decode('ascii').lower()
+        normalized = (
+            unicodedata.normalize("NFKD", name_text)
+            .encode("ascii", "ignore")
+            .decode("ascii")
+            .lower()
+        )
         tokens = [
             token
             for token in token_pattern.findall(normalized)
@@ -906,7 +983,10 @@ def load_yelp_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/yelp
         tokenized_names.append(tokens)
         token_counts.update(tokens)
 
-    vocab_tokens = [token for token, _ in token_counts.most_common(max(0, int(name_dictionary_size)))]
+    vocab_tokens = [
+        token
+        for token, _ in token_counts.most_common(max(0, int(name_dictionary_size)))
+    ]
     vocab = {token: idx for idx, token in enumerate(vocab_tokens)}
 
     num_states = int(state_values.max()) + 1 if num_nodes > 0 else 0
@@ -932,13 +1012,13 @@ def load_yelp_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/yelp
     y = torch.from_numpy(remapped_labels.astype(np.int64, copy=False))
 
     incidence = pd.read_csv(
-        os.path.join(path, 'yelp_restaurant_incidence_H.csv'),
-        usecols=['node', 'he', 'val'],
-        dtype={'node': np.int64, 'he': np.int64, 'val': np.float32},
+        os.path.join(path, "yelp_restaurant_incidence_H.csv"),
+        usecols=["node", "he", "val"],
+        dtype={"node": np.int64, "he": np.int64, "val": np.float32},
     )
-    node_ids = incidence['node'].to_numpy(dtype=np.int64, copy=True) - 1
-    hyperedge_ids = incidence['he'].to_numpy(dtype=np.int64, copy=True)
-    values = incidence['val'].fillna(1.0).to_numpy(dtype=np.float32, copy=True)
+    node_ids = incidence["node"].to_numpy(dtype=np.int64, copy=True) - 1
+    hyperedge_ids = incidence["he"].to_numpy(dtype=np.int64, copy=True)
+    values = incidence["val"].fillna(1.0).to_numpy(dtype=np.float32, copy=True)
 
     valid_mask = (node_ids >= 0) & (node_ids < num_nodes)
     node_ids = node_ids[valid_mask]
@@ -954,7 +1034,9 @@ def load_yelp_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/yelp
             (num_nodes, num_nodes),
         ).coalesce()
     else:
-        unique_hyperedges, local_hyperedge_ids = np.unique(hyperedge_ids, return_inverse=True)
+        unique_hyperedges, local_hyperedge_ids = np.unique(
+            hyperedge_ids, return_inverse=True
+        )
         indices = torch.from_numpy(
             np.vstack([node_ids, local_hyperedge_ids]).astype(np.int64, copy=False)
         )
@@ -983,14 +1065,18 @@ def load_yelp_dataset(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/yelp
     return data, H
 
 
-def load_house_committees(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/house-committees', dataset = 'house-committees', train_percent = 0.5):
-    '''
+def load_house_committees(
+    path="../data/AllSet_all_raw_data/AllSet_all_raw_data/house-committees",
+    dataset="house-committees",
+    train_percent=0.5,
+):
+    """
     Load the house-committees hypergraph described by line-based node labels,
     node names, and comma-separated hyperedges.
-    '''
+    """
 
     def _resolve_dataset_dir(raw_path: str) -> str:
-        expected = f'node-labels-{dataset}.txt'
+        expected = f"node-labels-{dataset}.txt"
         if os.path.isfile(os.path.join(raw_path, expected)):
             return raw_path
         base_dir = _find_allset_base_dir()
@@ -1002,14 +1088,23 @@ def load_house_committees(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/
             return nested_candidate
         return raw_path
 
-    def _build_masks(labels_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _build_masks(
+        labels_tensor: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         train_mask = torch.zeros(num_nodes, dtype=torch.bool)
         val_mask = torch.zeros(num_nodes, dtype=torch.bool)
         test_mask = torch.zeros(num_nodes, dtype=torch.bool)
 
         num_classes = int(labels_tensor.max().item()) + 1
         for class_idx in range(num_classes):
-            idxs = (labels_tensor == class_idx).nonzero(as_tuple=False).view(-1).cpu().numpy().tolist()
+            idxs = (
+                (labels_tensor == class_idx)
+                .nonzero(as_tuple=False)
+                .view(-1)
+                .cpu()
+                .numpy()
+                .tolist()
+            )
             if not idxs:
                 continue
             rng = np.random.default_rng(seed=42 + class_idx)
@@ -1033,19 +1128,19 @@ def load_house_committees(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/
     path = _resolve_dataset_dir(path)
     print(f"Loading hypergraph dataset from {os.path.basename(path)}")
 
-    labels_path = os.path.join(path, f'node-labels-{dataset}.txt')
-    names_path = os.path.join(path, f'node-names-{dataset}.txt')
-    hyperedges_path = os.path.join(path, f'hyperedges-{dataset}.txt')
+    labels_path = os.path.join(path, f"node-labels-{dataset}.txt")
+    names_path = os.path.join(path, f"node-names-{dataset}.txt")
+    hyperedges_path = os.path.join(path, f"hyperedges-{dataset}.txt")
 
     raw_label_keys = []
-    with open(labels_path, 'r', encoding='utf-8') as f:
+    with open(labels_path, "r", encoding="utf-8") as f:
         for line in f:
-            parts = [part.strip() for part in line.strip().split(',') if part.strip()]
+            parts = [part.strip() for part in line.strip().split(",") if part.strip()]
             label_key = tuple(sorted(int(part) for part in parts))
             raw_label_keys.append(label_key if label_key else (-1,))
 
     node_names = []
-    with open(names_path, 'r', encoding='utf-8') as f:
+    with open(names_path, "r", encoding="utf-8") as f:
         for line in f:
             node_names.append(line.strip())
 
@@ -1076,16 +1171,23 @@ def load_house_committees(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/
     if rows:
         indices = torch.tensor([rows, cols], dtype=torch.long)
         values = torch.ones(len(rows), dtype=torch.float32)
-        H = torch.sparse_coo_tensor(indices, values, (num_nodes, num_hyperedges)).coalesce()
+        H = torch.sparse_coo_tensor(
+            indices, values, (num_nodes, num_hyperedges)
+        ).coalesce()
     else:
         idx = torch.arange(num_nodes, dtype=torch.long)
         indices = torch.stack([idx, idx], dim=0)
         values = torch.ones(num_nodes, dtype=torch.float32)
         H = torch.sparse_coo_tensor(indices, values, (num_nodes, num_nodes)).coalesce()
 
-    avg_size = np.divide(size_sum, np.maximum(degree, 1.0), out=np.zeros_like(size_sum), where=degree > 0)
+    avg_size = np.divide(
+        size_sum, np.maximum(degree, 1.0), out=np.zeros_like(size_sum), where=degree > 0
+    )
     min_size[~np.isfinite(min_size)] = 0.0
-    name_word_count = np.array([len([part for part in name.split() if part]) for name in node_names], dtype=np.float32)
+    name_word_count = np.array(
+        [len([part for part in name.split() if part]) for name in node_names],
+        dtype=np.float32,
+    )
     name_char_count = np.array([len(name) for name in node_names], dtype=np.float32)
 
     features = np.stack(
@@ -1097,7 +1199,9 @@ def load_house_committees(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/
 
     unique_label_keys = sorted(set(raw_label_keys))
     label_to_idx = {label_key: idx for idx, label_key in enumerate(unique_label_keys)}
-    y = torch.tensor([label_to_idx[label_key] for label_key in raw_label_keys], dtype=torch.long)
+    y = torch.tensor(
+        [label_to_idx[label_key] for label_key in raw_label_keys], dtype=torch.long
+    )
     x = torch.from_numpy(features)
 
     print(f"number of nodes:{num_nodes}, feature dimension: {features.shape[1]}")
@@ -1121,14 +1225,18 @@ def load_house_committees(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/
     return data, H
 
 
-def load_walmart_trips(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/walmart-trips', dataset = 'walmart-trips', train_percent = 0.5):
-    '''
+def load_walmart_trips(
+    path="../data/AllSet_all_raw_data/AllSet_all_raw_data/walmart-trips",
+    dataset="walmart-trips",
+    train_percent=0.5,
+):
+    """
     Load the walmart-trips hypergraph described by line-based node labels and
     comma-separated hyperedges.
-    '''
+    """
 
     def _resolve_dataset_dir(raw_path: str) -> str:
-        expected = f'node-labels-{dataset}.txt'
+        expected = f"node-labels-{dataset}.txt"
         if os.path.isfile(os.path.join(raw_path, expected)):
             return raw_path
         base_dir = _find_allset_base_dir()
@@ -1140,14 +1248,23 @@ def load_walmart_trips(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/wal
             return nested_candidate
         return raw_path
 
-    def _build_masks(labels_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _build_masks(
+        labels_tensor: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         train_mask = torch.zeros(num_nodes, dtype=torch.bool)
         val_mask = torch.zeros(num_nodes, dtype=torch.bool)
         test_mask = torch.zeros(num_nodes, dtype=torch.bool)
 
         num_classes = int(labels_tensor.max().item()) + 1
         for class_idx in range(num_classes):
-            idxs = (labels_tensor == class_idx).nonzero(as_tuple=False).view(-1).cpu().numpy().tolist()
+            idxs = (
+                (labels_tensor == class_idx)
+                .nonzero(as_tuple=False)
+                .view(-1)
+                .cpu()
+                .numpy()
+                .tolist()
+            )
             if not idxs:
                 continue
             rng = np.random.default_rng(seed=42 + class_idx)
@@ -1171,13 +1288,13 @@ def load_walmart_trips(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/wal
     path = _resolve_dataset_dir(path)
     print(f"Loading hypergraph dataset from {os.path.basename(path)}")
 
-    labels_path = os.path.join(path, f'node-labels-{dataset}.txt')
-    hyperedges_path = os.path.join(path, f'hyperedges-{dataset}.txt')
+    labels_path = os.path.join(path, f"node-labels-{dataset}.txt")
+    hyperedges_path = os.path.join(path, f"hyperedges-{dataset}.txt")
 
     raw_label_keys = []
-    with open(labels_path, 'r', encoding='utf-8') as f:
+    with open(labels_path, "r", encoding="utf-8") as f:
         for line in f:
-            parts = [part.strip() for part in line.strip().split(',') if part.strip()]
+            parts = [part.strip() for part in line.strip().split(",") if part.strip()]
             label_key = tuple(sorted(int(part) for part in parts))
             raw_label_keys.append(label_key if label_key else (-1,))
 
@@ -1205,16 +1322,25 @@ def load_walmart_trips(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/wal
     if rows:
         indices = torch.tensor([rows, cols], dtype=torch.long)
         values = torch.ones(len(rows), dtype=torch.float32)
-        H = torch.sparse_coo_tensor(indices, values, (num_nodes, num_hyperedges)).coalesce()
+        H = torch.sparse_coo_tensor(
+            indices, values, (num_nodes, num_hyperedges)
+        ).coalesce()
     else:
         idx = torch.arange(num_nodes, dtype=torch.long)
         indices = torch.stack([idx, idx], dim=0)
         values = torch.ones(num_nodes, dtype=torch.float32)
         H = torch.sparse_coo_tensor(indices, values, (num_nodes, num_nodes)).coalesce()
 
-    avg_size = np.divide(size_sum, np.maximum(degree, 1.0), out=np.zeros_like(size_sum), where=degree > 0)
+    avg_size = np.divide(
+        size_sum, np.maximum(degree, 1.0), out=np.zeros_like(size_sum), where=degree > 0
+    )
     rms_size = np.sqrt(
-        np.divide(size_sq_sum, np.maximum(degree, 1.0), out=np.zeros_like(size_sq_sum), where=degree > 0)
+        np.divide(
+            size_sq_sum,
+            np.maximum(degree, 1.0),
+            out=np.zeros_like(size_sq_sum),
+            where=degree > 0,
+        )
     )
     min_size[~np.isfinite(min_size)] = 0.0
     bias = np.ones(num_nodes, dtype=np.float32)
@@ -1228,7 +1354,9 @@ def load_walmart_trips(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/wal
 
     unique_label_keys = sorted(set(raw_label_keys))
     label_to_idx = {label_key: idx for idx, label_key in enumerate(unique_label_keys)}
-    y = torch.tensor([label_to_idx[label_key] for label_key in raw_label_keys], dtype=torch.long)
+    y = torch.tensor(
+        [label_to_idx[label_key] for label_key in raw_label_keys], dtype=torch.long
+    )
     x = torch.from_numpy(features)
 
     print(f"number of nodes:{num_nodes}, feature dimension: {features.shape[1]}")
@@ -1252,14 +1380,18 @@ def load_walmart_trips(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/wal
     return data, H
 
 
-def load_NTU2012(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/NTU2012', dataset = 'NTU2012', train_percent = 0.5):
-    '''
+def load_NTU2012(
+    path="../data/AllSet_all_raw_data/AllSet_all_raw_data/NTU2012",
+    dataset="NTU2012",
+    train_percent=0.5,
+):
+    """
     Load the NTU2012 dataset, whose content file includes node rows followed by
     appended hyperedge rows, while the edges file maps nodes to hyperedge ids.
-    '''
+    """
 
     def _resolve_dataset_dir(raw_path: str) -> str:
-        expected = f'{dataset}.content'
+        expected = f"{dataset}.content"
         if os.path.isfile(os.path.join(raw_path, expected)):
             return raw_path
         base_dir = _find_allset_base_dir()
@@ -1271,14 +1403,23 @@ def load_NTU2012(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/NTU2012',
             return nested_candidate
         return raw_path
 
-    def _build_masks(labels_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _build_masks(
+        labels_tensor: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         train_mask = torch.zeros(num_nodes, dtype=torch.bool)
         val_mask = torch.zeros(num_nodes, dtype=torch.bool)
         test_mask = torch.zeros(num_nodes, dtype=torch.bool)
 
         num_classes = int(labels_tensor.max().item()) + 1
         for class_idx in range(num_classes):
-            idxs = (labels_tensor == class_idx).nonzero(as_tuple=False).view(-1).cpu().numpy().tolist()
+            idxs = (
+                (labels_tensor == class_idx)
+                .nonzero(as_tuple=False)
+                .view(-1)
+                .cpu()
+                .numpy()
+                .tolist()
+            )
             if not idxs:
                 continue
             rng = np.random.default_rng(seed=42 + class_idx)
@@ -1302,12 +1443,12 @@ def load_NTU2012(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/NTU2012',
     path = _resolve_dataset_dir(path)
     print(f"Loading hypergraph dataset from {os.path.basename(path)}")
 
-    content_path = os.path.join(path, f'{dataset}.content')
-    edges_path = os.path.join(path, f'{dataset}.edges')
+    content_path = os.path.join(path, f"{dataset}.content")
+    edges_path = os.path.join(path, f"{dataset}.edges")
 
     rows = []
     cols_raw = []
-    with open(edges_path, 'r', encoding='utf-8') as f:
+    with open(edges_path, "r", encoding="utf-8") as f:
         for line in f:
             parts = line.strip().split()
             if len(parts) < 2:
@@ -1318,7 +1459,7 @@ def load_NTU2012(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/NTU2012',
             cols_raw.append(hyperedge_idx)
 
     if not rows:
-        raise ValueError(f'No node-hyperedge pairs found in {edges_path}')
+        raise ValueError(f"No node-hyperedge pairs found in {edges_path}")
 
     num_nodes = min(cols_raw)
     unique_cols = sorted(set(cols_raw))
@@ -1326,11 +1467,13 @@ def load_NTU2012(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/NTU2012',
     cols = [raw_to_local[raw_col] for raw_col in cols_raw]
     indices = torch.tensor([rows, cols], dtype=torch.long)
     values = torch.ones(len(rows), dtype=torch.float32)
-    H = torch.sparse_coo_tensor(indices, values, (num_nodes, len(unique_cols))).coalesce()
+    H = torch.sparse_coo_tensor(
+        indices, values, (num_nodes, len(unique_cols))
+    ).coalesce()
 
     features_by_id = [None] * num_nodes
     labels_by_id = [None] * num_nodes
-    with open(content_path, 'r', encoding='utf-8') as f:
+    with open(content_path, "r", encoding="utf-8") as f:
         for line in f:
             toks = line.strip().split()
             if len(toks) < 3:
@@ -1341,8 +1484,12 @@ def load_NTU2012(path='../data/AllSet_all_raw_data/AllSet_all_raw_data/NTU2012',
             features_by_id[row_id] = [float(value) for value in toks[1:-1]]
             labels_by_id[row_id] = int(float(toks[-1]))
 
-    if any(feature_row is None for feature_row in features_by_id) or any(label is None for label in labels_by_id):
-        raise ValueError(f'Could not parse all {num_nodes} node rows from {content_path}')
+    if any(feature_row is None for feature_row in features_by_id) or any(
+        label is None for label in labels_by_id
+    ):
+        raise ValueError(
+            f"Could not parse all {num_nodes} node rows from {content_path}"
+        )
 
     features = np.asarray(features_by_id, dtype=np.float32)
     labels = np.asarray(labels_by_id, dtype=np.int64)
@@ -1393,8 +1540,13 @@ def main() -> None:
         required=True,
         help="Type of test to run: 'dataset' to enumerate/load datasets, 'node' to inspect a specific node",
     )
-    parser.add_argument("--dataset", help="Dataset name (for node inspection; Planetoid or AllSet folder name)")
-    parser.add_argument("--node-id", type=int, help="Node id to inspect (required for --test node)")
+    parser.add_argument(
+        "--dataset",
+        help="Dataset name (for node inspection; Planetoid or AllSet folder name)",
+    )
+    parser.add_argument(
+        "--node-id", type=int, help="Node id to inspect (required for --test node)"
+    )
     parser.add_argument(
         "--base-data-dir",
         default=None,
@@ -1429,7 +1581,11 @@ def main() -> None:
         # Enumerate AllSet datasets
         if os.path.isdir(base_dir):
             entries = sorted(
-                [e for e in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, e))]
+                [
+                    e
+                    for e in os.listdir(base_dir)
+                    if os.path.isdir(os.path.join(base_dir, e))
+                ]
             )
             if not entries:
                 print("No subfolders found in AllSet base dir.")
@@ -1438,14 +1594,20 @@ def main() -> None:
                 if name in ("cocitation", "coauthorship"):
                     family_dir = os.path.join(base_dir, name)
                     subdatasets = sorted(
-                        [entry for entry in os.listdir(family_dir) if os.path.isdir(os.path.join(family_dir, entry))]
+                        [
+                            entry
+                            for entry in os.listdir(family_dir)
+                            if os.path.isdir(os.path.join(family_dir, entry))
+                        ]
                     )
                     if not subdatasets:
                         print(f"  No subdatasets found in '{name}'.")
                     for subname in subdatasets:
                         print(f"  -- '{name}/{subname}' --")
                         try:
-                            data, H = load_citation_dataset(path=family_dir, dataset=subname)
+                            data, H = load_citation_dataset(
+                                path=family_dir, dataset=subname
+                            )
                         except Exception as e:
                             print(f"  Failed to load '{name}/{subname}': {e}")
                             traceback.print_exc()
@@ -1456,15 +1618,25 @@ def main() -> None:
                         print(f"    num_nodes: {data.num_nodes}")
                         print(f"    x.shape: {tuple(data.x.shape)}")
                         print(f"    y.shape: {tuple(data.y.shape)}")
-                        print(f"    dataset.num_classes: {int(data.y.unique().numel())}")
+                        print(
+                            f"    dataset.num_classes: {int(data.y.unique().numel())}"
+                        )
                         print(f"    min_node_degree: {degree_stats['min_node_degree']}")
                         print(f"    max_node_degree: {degree_stats['max_node_degree']}")
-                        print(f"    median_node_degree: {degree_stats['median_node_degree']:.6g}")
-                        print(f"    avg_node_degree: {degree_stats['avg_node_degree']:.6g}")
+                        print(
+                            f"    median_node_degree: {degree_stats['median_node_degree']:.6g}"
+                        )
+                        print(
+                            f"    avg_node_degree: {degree_stats['avg_node_degree']:.6g}"
+                        )
                         print(f"    min_edge_degree: {degree_stats['min_edge_degree']}")
                         print(f"    max_edge_degree: {degree_stats['max_edge_degree']}")
-                        print(f"    median_edge_degree: {degree_stats['median_edge_degree']:.6g}")
-                        print(f"    avg_edge_degree: {degree_stats['avg_edge_degree']:.6g}")
+                        print(
+                            f"    median_edge_degree: {degree_stats['median_edge_degree']:.6g}"
+                        )
+                        print(
+                            f"    avg_edge_degree: {degree_stats['avg_edge_degree']:.6g}"
+                        )
                         if hasattr(data, "train_mask"):
                             t = int(data.train_mask.sum().item())
                             v = int(data.val_mask.sum().item())
@@ -1474,7 +1646,9 @@ def main() -> None:
                     continue
 
                 try:
-                    data, H = load_allset_dataset(name, base_data_dir=base_dir, device=device)
+                    data, H = load_allset_dataset(
+                        name, base_data_dir=base_dir, device=device
+                    )
                 except Exception as e:
                     print(f"  Failed to load '{name}': {e}")
                     traceback.print_exc()
@@ -1501,7 +1675,10 @@ def main() -> None:
                 print(f"  H shape: {H.shape}, nnz: {_safe_nnzsparse(H)}")
 
                 mismatches = _validate_allset_structure_statistics(name, data, H)
-                if _normalize_allset_dataset_name(name) in _EXPECTED_ALLSET_STRUCTURE_STATS:
+                if (
+                    _normalize_allset_dataset_name(name)
+                    in _EXPECTED_ALLSET_STRUCTURE_STATS
+                ):
                     validated_allset_datasets += 1
                     if mismatches:
                         print("  structure_check: FAIL")
@@ -1524,12 +1701,16 @@ def main() -> None:
             have_planetoid = False
 
         if have_planetoid:
-            plan_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "Planetoid"))
+            plan_root = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "data", "Planetoid")
+            )
             print(f"\nPlanetoid root: {plan_root}")
             for name in ("Cora", "Citeseer", "Pubmed"):
                 print(f"\n== Planetoid: '{name}' ==")
                 try:
-                    dataset = Planetoid(root=plan_root, name=name, transform=NormalizeFeatures())
+                    dataset = Planetoid(
+                        root=plan_root, name=name, transform=NormalizeFeatures()
+                    )
                     data = dataset[0].to(device)
                     print(f"  num_nodes: {data.num_nodes}")
                     print(f"  x.shape: {tuple(data.x.shape)}")
@@ -1552,20 +1733,26 @@ def main() -> None:
 
                     if graph_to_hypergraph is not None:
                         try:
-                            H = graph_to_hypergraph(data.edge_index, data.num_nodes, device=device)
+                            H = graph_to_hypergraph(
+                                data.edge_index, data.num_nodes, device=device
+                            )
                             print(f"  H shape: {H.shape}, nnz: {_safe_nnzsparse(H)}")
                         except Exception as exc:
                             print(f"  Failed to build incidence matrix: {exc}")
                             traceback.print_exc()
-                                        
+
                     degree_stats = _summarize_degree_statistics(H)
                     print(f"  min_node_degree: {degree_stats['min_node_degree']}")
                     print(f"  max_node_degree: {degree_stats['max_node_degree']}")
-                    print(f"  median_node_degree: {degree_stats['median_node_degree']:.6g}")
+                    print(
+                        f"  median_node_degree: {degree_stats['median_node_degree']:.6g}"
+                    )
                     print(f"  avg_node_degree: {degree_stats['avg_node_degree']:.6g}")
                     print(f"  min_edge_degree: {degree_stats['min_edge_degree']}")
                     print(f"  max_edge_degree: {degree_stats['max_edge_degree']}")
-                    print(f"  median_edge_degree: {degree_stats['median_edge_degree']:.6g}")
+                    print(
+                        f"  median_edge_degree: {degree_stats['median_edge_degree']:.6g}"
+                    )
                     print(f"  avg_edge_degree: {degree_stats['avg_edge_degree']:.6g}")
                 except Exception as e:
                     print(f"  Failed to load Planetoid '{name}': {e}")
@@ -1603,9 +1790,13 @@ def main() -> None:
                 print("torch_geometric not available; cannot inspect Planetoid dataset")
                 return
 
-            plan_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "Planetoid"))
+            plan_root = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "data", "Planetoid")
+            )
             try:
-                dataset = Planetoid(root=plan_root, name=name, transform=NormalizeFeatures())
+                dataset = Planetoid(
+                    root=plan_root, name=name, transform=NormalizeFeatures()
+                )
                 data = dataset[0].to(device)
             except Exception as exc:
                 print(f"Failed to load Planetoid '{name}': {exc}")
@@ -1613,7 +1804,9 @@ def main() -> None:
                 return
 
             if not (0 <= node_id < int(data.num_nodes)):
-                print(f"node-id {node_id} is out of range (0..{int(data.num_nodes)-1})")
+                print(
+                    f"node-id {node_id} is out of range (0..{int(data.num_nodes) - 1})"
+                )
                 return
 
             print(f"\nPlanetoid dataset '{name}' — node {node_id}")
@@ -1624,7 +1817,9 @@ def main() -> None:
             if hasattr(data, "y"):
                 print(f"  y[{node_id}]: {int(data.y[node_id].item())}")
             if hasattr(data, "train_mask"):
-                print(f"  train/val/test membership: {bool(data.train_mask[node_id].item())}/{bool(data.val_mask[node_id].item())}/{bool(data.test_mask[node_id].item())}")
+                print(
+                    f"  train/val/test membership: {bool(data.train_mask[node_id].item())}/{bool(data.val_mask[node_id].item())}/{bool(data.test_mask[node_id].item())}"
+                )
 
             # Graph neighbors
             try:
@@ -1633,7 +1828,9 @@ def main() -> None:
                 neigh1 = col[(row == node_id)].cpu().numpy().tolist()
                 neigh2 = row[(col == node_id)].cpu().numpy().tolist()
                 neighbors = sorted(set(neigh1 + neigh2))
-                print(f"  graph neighbors (count {len(neighbors)}), first 10: {neighbors[:10]}")
+                print(
+                    f"  graph neighbors (count {len(neighbors)}), first 10: {neighbors[:10]}"
+                )
             except Exception:
                 print("  Could not compute graph neighbors.")
 
@@ -1649,10 +1846,14 @@ def main() -> None:
                 rows_np = idxs[0].cpu().numpy()
                 cols_np = idxs[1].cpu().numpy()
                 hedges = sorted(set(cols_np[rows_np == node_id].tolist()))
-                print(f"  hyperedges containing node: {len(hedges)}, first 10: {hedges[:10]}")
+                print(
+                    f"  hyperedges containing node: {len(hedges)}, first 10: {hedges[:10]}"
+                )
                 nodes_in_heds = sorted(set(rows_np[np.isin(cols_np, hedges)].tolist()))
                 nodes_in_heds = [int(n) for n in nodes_in_heds if int(n) != node_id]
-                print(f"  nodes in same hyperedges (count {len(nodes_in_heds)}), first 10: {nodes_in_heds[:10]}")
+                print(
+                    f"  nodes in same hyperedges (count {len(nodes_in_heds)}), first 10: {nodes_in_heds[:10]}"
+                )
             except Exception:
                 print("  Could not compute hypergraph info.")
 
@@ -1667,7 +1868,7 @@ def main() -> None:
             return
 
         if not (0 <= node_id < int(data.num_nodes)):
-            print(f"node-id {node_id} is out of range (0..{int(data.num_nodes)-1})")
+            print(f"node-id {node_id} is out of range (0..{int(data.num_nodes) - 1})")
             return
 
         print(f"\nAllSet dataset '{name}' — node {node_id}")
@@ -1677,7 +1878,9 @@ def main() -> None:
         print(f"  x[{node_id}] (len={len(xnode)}), first 10: {xnode[:10]}")
         print(f"  y[{node_id}]: {int(data.y[node_id].item())}")
         if hasattr(data, "train_mask"):
-            print(f"  train/val/test membership: {bool(data.train_mask[node_id].item())}/{bool(data.val_mask[node_id].item())}/{bool(data.test_mask[node_id].item())}")
+            print(
+                f"  train/val/test membership: {bool(data.train_mask[node_id].item())}/{bool(data.val_mask[node_id].item())}/{bool(data.test_mask[node_id].item())}"
+            )
 
         try:
             Hc = H.coalesce()
@@ -1685,13 +1888,16 @@ def main() -> None:
             rows_np = idxs[0].cpu().numpy()
             cols_np = idxs[1].cpu().numpy()
             hedges = sorted(set(cols_np[rows_np == node_id].tolist()))
-            print(f"  hyperedges containing node: {len(hedges)}, first 10: {hedges[:10]}")
+            print(
+                f"  hyperedges containing node: {len(hedges)}, first 10: {hedges[:10]}"
+            )
             nodes_in_heds = sorted(set(rows_np[np.isin(cols_np, hedges)].tolist()))
             nodes_in_heds = [int(n) for n in nodes_in_heds if int(n) != node_id]
-            print(f"  nodes in same hyperedges (count {len(nodes_in_heds)}), first 10: {nodes_in_heds[:10]}")
+            print(
+                f"  nodes in same hyperedges (count {len(nodes_in_heds)}), first 10: {nodes_in_heds[:10]}"
+            )
         except Exception:
             print("  Could not compute hypergraph info for AllSet dataset.")
-
 
 
 if __name__ == "__main__":
