@@ -2,6 +2,7 @@ import argparse
 import os
 import pickle
 import time
+from types import SimpleNamespace
 
 import torch
 from torch_geometric.datasets import Planetoid
@@ -21,6 +22,9 @@ from utils import (
 )
 
 
+PLANETOID_DATASETS = ("Cora", "Citeseer", "Pubmed")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run HyperEx on a pretrained HGCN model."
@@ -34,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset",
         default="Cora",
-        help="Name of the Planetoid dataset (Cora, Citeseer, Pubmed)",
+        help="Name of the Planetoid or AllSet dataset",
     )
     parser.add_argument(
         "--target-node",
@@ -182,15 +186,46 @@ def default_output_path(dataset: str) -> str:
     )
 
 
-def load_data_and_model(args: argparse.Namespace, device: torch.device):
-    dataset = Planetoid(
-        root=os.path.join(os.path.dirname(__file__), "..", "data", "Planetoid"),
-        name=args.dataset,
-        transform=NormalizeFeatures(),
-    )
-    data = dataset[0].to(device)
-    H = graph_to_hypergraph(data.edge_index, data.num_nodes, device=device)
+def resolve_planetoid_root() -> str:
+    script_dir = os.path.abspath(os.path.dirname(__file__))
+    candidates = [
+        os.path.join(script_dir, "data", "Planetoid"),
+        os.path.join(script_dir, "..", "data", "Planetoid"),
+    ]
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return candidates[0]
 
+
+def load_dataset(dataset_name: str, device: torch.device):
+    if dataset_name in PLANETOID_DATASETS:
+        dataset = Planetoid(
+            root=resolve_planetoid_root(),
+            name=dataset_name,
+            transform=NormalizeFeatures(),
+        )
+        data = dataset[0].to(device)
+        H = graph_to_hypergraph(data.edge_index, data.num_nodes, device=device)
+        return dataset, data, H
+
+    from utils.allset_loader import load_allset_dataset
+
+    data, H = load_allset_dataset(dataset_name, device=device)
+    data.x = data.x.to(device)
+    data.y = data.y.to(device)
+    data.train_mask = data.train_mask.to(device)
+    data.val_mask = data.val_mask.to(device)
+    data.test_mask = data.test_mask.to(device)
+    dataset = SimpleNamespace(
+        num_features=int(data.x.size(1)),
+        num_classes=int(int(data.y.max().item()) + 1),
+    )
+    return dataset, data, H
+
+
+def load_data_and_model(args: argparse.Namespace, device: torch.device):
+    dataset, data, H = load_dataset(args.dataset, device)
     model = HGCN(
         nfeat=dataset.num_features,
         nhid=args.nhid,
