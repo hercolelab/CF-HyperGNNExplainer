@@ -217,6 +217,7 @@ def run_training(
     attention_module = build_attention_module(
         num_classes=dataset.num_classes,
         device=device,
+        max_hops=args.n_hops,
         checkpoint_path=args.attention_ckpt,
         strict=False,
     )
@@ -255,6 +256,7 @@ def run_inference(
     attention_module = build_attention_module(
         num_classes=dataset.num_classes,
         device=device,
+        max_hops=args.n_hops,
         checkpoint_path=args.attention_ckpt,
     )
     if args.attention_ckpt is None:

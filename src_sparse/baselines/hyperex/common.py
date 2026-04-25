@@ -85,6 +85,32 @@ def local_class_probabilities(global_probs: Tensor, local_to_global: Tensor) -> 
     return global_probs[local_to_global]
 
 
+def local_hop_distances(H_dense: Tensor, target_node_local: int, max_hops: int) -> Tensor:
+    n = H_dense.size(0)
+    distances = torch.full(
+        (n,),
+        int(max_hops),
+        dtype=torch.long,
+        device=H_dense.device,
+    )
+    frontier = torch.zeros(n, dtype=torch.bool, device=H_dense.device)
+    frontier[int(target_node_local)] = True
+    distances[int(target_node_local)] = 0
+
+    incidence = H_dense > 0
+    for hop in range(1, int(max_hops) + 1):
+        edges = incidence[frontier].any(dim=0)
+        reached = incidence[:, edges].any(dim=1)
+        new_nodes = reached & (distances == int(max_hops))
+        new_nodes[int(target_node_local)] = False
+        distances[new_nodes] = hop
+        frontier = new_nodes
+        if not frontier.any():
+            break
+
+    return distances
+
+
 def normalize_propagation_dense(H: Tensor) -> Tensor:
     d_inv_sqrt = H.sum(dim=1).clamp(min=1).pow(-0.5)
     b_inv = H.sum(dim=0).clamp(min=1).pow(-1.0)
@@ -136,11 +162,6 @@ def build_explanation_hypergraph_from_alpha(
     flat = alpha[rows, cols].detach()
     selected_inds = select_topk_indices(flat, thresh_num)
     return build_binary_hypergraph(comp_H, selected_inds)
-
-
-def training_soft_weights_from_alpha(alpha: Tensor, H_dense: Tensor) -> Tensor:
-    pair_mask = H_dense > 0
-    return alpha * pair_mask.to(dtype=alpha.dtype)
 
 
 def training_dense_weights_from_alpha(

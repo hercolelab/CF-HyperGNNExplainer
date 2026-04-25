@@ -9,6 +9,7 @@ from baselines.hyperex.common import (
     build_local_to_global,
     compute_hyperedge_embeddings_global,
     extract_induced_edge_global_ids,
+    local_hop_distances,
     local_class_probabilities,
     sparse_incidence_to_dense,
 )
@@ -83,10 +84,16 @@ class HyperExExplainer:
                 self.full_H, self._node_dict
             )
             h_edges = h_global[comp_edge_global_ids]
+            hop_distances = local_hop_distances(
+                H_dense,
+                self.target_node_local,
+                self.attention_module.max_hops,
+            )
             alpha, omega_m = self.attention_module.forward_dense(
                 z_local,
                 h_edges,
                 H_dense,
+                hop_distances,
             )
             expl_H = build_explanation_hypergraph_from_alpha(
                 comp_H=self.comp_H,

@@ -10,10 +10,11 @@ from baselines.hyperex.common import (
     build_local_to_global,
     compute_hyperedge_embeddings_global,
     extract_induced_edge_global_ids,
+    local_hop_distances,
     local_class_probabilities,
     normalize_propagation_dense,
     sparse_incidence_to_dense,
-    training_soft_weights_from_alpha,
+    training_dense_weights_from_alpha,
 )
 from baselines.hyperex.infonce import InfoNCE_loss
 
@@ -55,7 +56,7 @@ def load_attention_checkpoint(
             )
         return attention_module
     state_dict = torch.load(checkpoint_path, map_location=device)
-    attention_module.load_state_dict(state_dict)
+    attention_module.load_state_dict(state_dict, strict=strict)
     return attention_module
 
 
@@ -71,10 +72,11 @@ def save_attention_checkpoint(
 def build_attention_module(
     num_classes: int,
     device: torch.device,
+    max_hops: int = 3,
     checkpoint_path: str | None = None,
     strict: bool = True,
 ) -> Attention:
-    attention_module = Attention(embed_dim=num_classes).to(device)
+    attention_module = Attention(embed_dim=num_classes, max_hops=max_hops).to(device)
     return load_attention_checkpoint(
         attention_module, checkpoint_path, device, strict=strict
     )
@@ -118,7 +120,7 @@ def train_hyperex_attention(
 
     if attention_module is None:
         num_classes = int(labels.max().item()) + 1
-        attention_module = Attention(embed_dim=num_classes).to(device)
+        attention_module = Attention(embed_dim=num_classes, max_hops=n_hops).to(device)
     else:
         attention_module = attention_module.to(device)
 
@@ -176,12 +178,18 @@ def train_hyperex_attention(
                 comp_edge_global_ids = extract_induced_edge_global_ids(H, node_dict)
                 h_edges = h_global[comp_edge_global_ids]
                 target_local = int(node_dict[node_idx])
+                hop_distances = local_hop_distances(H_dense, target_local, n_hops)
 
-                alpha, _ = attention_module.forward_dense(z_local, h_edges, H_dense)
+                alpha, _ = attention_module.forward_dense(
+                    z_local,
+                    h_edges,
+                    H_dense,
+                    hop_distances,
+                )
                 if alpha.sum() == 0:
                     continue
 
-                dense_w = training_soft_weights_from_alpha(alpha, H_dense)
+                dense_w = training_dense_weights_from_alpha(alpha, H_dense, thresh_num)
                 S_local = normalize_propagation_dense(dense_w)
                 out_local = model(sub_feat, S_local, return_embeddings=True)
 
