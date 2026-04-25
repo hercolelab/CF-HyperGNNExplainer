@@ -5,20 +5,22 @@ from typing import List
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 
-# Fid⁻_Acc   — fraction of prediction mismatches           (↓ better)
-# Fid⁻_KL    — average KL(p_expl ‖ p_orig)                (↓ better)
-# Fid⁻_TV    — average total-variation distance             (↓ better)
-# Fid⁻_Xent  — average cross-entropy H(p_expl, p_orig)     (↓ better)
+# Fid-_Acc   — fraction of prediction mismatches                       (↓ better)
+# Fid-_KL    — KL(p_expl ‖ p_orig)                                    (↓ better)
+# Fid-_TV    — 1/2 * ||p_expl - p_orig||_1                            (↓ better)
+# Fid-_Xent  — H(p_expl, p_orig) = -Σ p_expl log p_orig                (↓ better)
 # Size        — average |G_expl|₁  (node-hyperedge links)   (↓ better)
 # Density     — average |G_expl|₁ / |G_comp|₁               (↓ better)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Evaluate SHypX explanation results (generalized fidelity)."
+        description=(
+            "Evaluate SHypX results with generalized fidelity- metrics "
+            "on explanation subhypergraphs."
+        )
     )
     parser.add_argument(
         "--results",
@@ -60,14 +62,12 @@ def compute_metrics(results: List) -> None:
         y_orig = p_orig.argmax().item()
         fid_acc.append(float(y_expl != y_orig))
 
-        kl = F.kl_div(p_orig.log(), p_expl, reduction="sum").item()
+        kl = (p_expl * (p_expl / p_orig).log()).sum().item()
         fid_kl.append(max(kl, 0.0))
 
-        # Total variation distance
         tv = 0.5 * (p_expl - p_orig).abs().sum().item()
         fid_tv.append(tv)
 
-        # Cross-entropy
         xent = -(p_expl * p_orig.log()).sum().item()
         fid_xent.append(xent)
 
@@ -75,15 +75,15 @@ def compute_metrics(results: List) -> None:
         comp = r["num_links_comp"]
         densities.append(r["num_links_expl"] / comp if comp > 0 else 0.0)
 
-    print(f"\nSHypX evaluation  ({N} / {total} nodes with valid explanations)\n")
+    print(f"\nSHypX fidelity- evaluation  ({N} / {total} valid)\n")
     print(f"  {'Metric':<22} {'Mean':>10} {'Std':>10}")
     print("  " + "-" * 44)
 
     for name, vals in [
-        ("Fid⁻_Acc  (↓)", fid_acc),
-        ("Fid⁻_KL   (↓)", fid_kl),
-        ("Fid⁻_TV   (↓)", fid_tv),
-        ("Fid⁻_Xent (↓)", fid_xent),
+        ("Fid-_Acc  (↓)", fid_acc),
+        ("Fid-_KL   (↓)", fid_kl),
+        ("Fid-_TV   (↓)", fid_tv),
+        ("Fid-_Xent (↓)", fid_xent),
         ("Size       (↓)", sizes),
         ("Density    (↓)", densities),
     ]:
