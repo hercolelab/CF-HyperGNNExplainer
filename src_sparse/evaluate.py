@@ -1,10 +1,11 @@
 import argparse
 import pickle
 import os
+import re
 import numpy as np
 import pandas as pd
 import torch
-
+import torch.nn.functional as F
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -75,29 +76,195 @@ def get_hyperedge_diff(sub_H_sparse, cf_H_sparse, eps=1e-5):
     return removed_hyperedges, total_hyperedges
 
 
+def extract_dataset_name(results_path: str) -> str:
+    result_name = os.path.splitext(os.path.basename(results_path))[0]
+    match = re.match(r"^cf_examples?_(.+?)_\d{8}-\d{6}(?:_.+)?$", result_name)
+    if match:
+        return match.group(1)
+
+    for prefix in ("cf_examples_", "cf_example_"):
+        if result_name.startswith(prefix):
+            remainder = result_name[len(prefix):]
+            return remainder.split("_", 1)[0]
+
+    return result_name
+
+
+def summarize_values(values) -> tuple[float | None, float | None]:
+    array = np.asarray(values, dtype=float)
+    array = array[np.isfinite(array)]
+
+    if array.size == 0:
+        return None, None
+
+    mean = float(np.mean(array))
+    std = float(np.std(array, ddof=1)) if array.size > 1 else None
+    return mean, std
+
+
+def format_number(value) -> str:
+    if value is None:
+        return "NA"
+
+    number = float(value)
+    if not np.isfinite(number):
+        return "NA"
+
+    if number.is_integer():
+        return str(int(number))
+
+    return f"{number:.6g}"
+
+
+def format_summary(values) -> str:
+    mean, std = summarize_values(values)
+    if mean is None:
+        return "NA"
+    if std is None:
+        return format_number(mean)
+    return f"{format_number(mean)} +/- {format_number(std)}"
+
+
+def print_results(csv_header: list[str], csv_values: list[str]) -> None:
+    print(",".join(csv_header))
+    print(",".join(csv_values))
+    print()
+    for key, value in zip(csv_header, csv_values):
+        print(f"{key}: {value}")
+
+
+def get_result_header(example_width: int) -> list[str]:
+    if example_width == 16:
+        return [
+            "node_idx",
+            "new_idx",
+            "cf_H",
+            "sub_H",
+            "y_pred_orig",
+            "y_pred_new",
+            "y_pred_new_actual",
+            "label",
+            "num_nodes",
+            "loss_total",
+            "loss_pred",
+            "loss_graph_dist_training",
+            "log_prob_orig",
+            "log_prob_new",
+            "log_prob_new_actual",
+            "log_prob_removed_only",
+        ]
+
+    if example_width == 15:
+        return [
+            "node_idx",
+            "new_idx",
+            "cf_H",
+            "sub_H",
+            "y_pred_orig",
+            "y_pred_new",
+            "y_pred_new_actual",
+            "label",
+            "num_nodes",
+            "loss_total",
+            "loss_pred",
+            "loss_graph_dist_training",
+            "log_prob_orig",
+            "log_prob_new",
+            "log_prob_new_actual",
+        ]
+
+    if example_width == 12:
+        return [
+            "node_idx",
+            "new_idx",
+            "cf_H",
+            "sub_H",
+            "y_pred_orig",
+            "y_pred_new",
+            "y_pred_new_actual",
+            "label",
+            "num_nodes",
+            "loss_total",
+            "loss_pred",
+            "loss_graph_dist_training",
+        ]
+
+    raise ValueError(f"Unsupported result row width: {example_width}")
+
+
+def compute_shypx_metrics(df: pd.DataFrame):
+    """Compute SHypX-style fidelity metrics for successful counterfactuals."""
+    required_columns = {"log_prob_orig", "log_prob_new", "y_pred_orig", "y_pred_new"}
+    if not required_columns.issubset(df.columns):
+        return None
+
+    metrics = {
+        "fid_plus_acc": [],
+        "fid_plus_kl": [],
+        "fid_plus_tv": [],
+        "fid_plus_xent": [],
+        "fid_minus_acc": [],
+        "fid_minus_kl": [],
+        "fid_minus_tv": [],
+        "fid_minus_xent": [],
+    }
+
+    eps = 1e-10
+    has_removed_only = "log_prob_removed_only" in df.columns
+
+    for i in df.index:
+        log_prob_orig = df["log_prob_orig"][i]
+        log_prob_new_actual = df["log_prob_new_actual"][i]
+
+        p_orig = torch.exp(log_prob_orig).clamp(min=eps)
+        p_cf = torch.exp(log_prob_new_actual).clamp(min=eps)
+
+        y_pred_orig = df["y_pred_orig"][i]
+        y_pred_new_actual = df["y_pred_new_actual"][i]
+
+        metrics["fid_plus_acc"].append(float(y_pred_orig != y_pred_new_actual))
+
+        kl_div = F.kl_div(p_orig.log(), p_cf, reduction="sum").item()
+        metrics["fid_plus_kl"].append(max(kl_div, 0.0))
+
+        tv_dist = 0.5 * torch.sum(torch.abs(p_cf - p_orig))
+        metrics["fid_plus_tv"].append(tv_dist.item())
+
+        xent = -torch.sum(p_orig * torch.log(p_cf))
+        metrics["fid_plus_xent"].append(xent.item())
+
+        if has_removed_only:
+            log_prob_removed_only = df["log_prob_removed_only"][i]
+            p_removed_only = torch.exp(log_prob_removed_only).clamp(min=eps)
+            y_pred_removed_only = torch.argmax(log_prob_removed_only).item()
+
+            metrics["fid_minus_acc"].append(float(y_pred_orig != y_pred_removed_only))
+
+            kl_div_removed_only = F.kl_div(
+                p_orig.log(), p_removed_only, reduction="sum"
+            ).item()
+            metrics["fid_minus_kl"].append(max(kl_div_removed_only, 0.0))
+
+            tv_dist_removed_only = 0.5 * torch.sum(
+                torch.abs(p_removed_only - p_orig)
+            )
+            metrics["fid_minus_tv"].append(tv_dist_removed_only.item())
+
+            xent_removed_only = -torch.sum(p_orig * torch.log(p_removed_only))
+            metrics["fid_minus_xent"].append(xent_removed_only.item())
+
+    return metrics
+
+
 def main():
     args = parse_args()
+    dataset_name = extract_dataset_name(args.results)
 
     if not os.path.exists(args.results):
         raise FileNotFoundError(f"Results file not found: {args.results}")
 
     with open(args.results, "rb") as f:
         cf_examples_per_node = pickle.load(f)
-
-    header = [
-        "node_idx",
-        "new_idx",
-        "cf_H",
-        "sub_H",
-        "y_pred_orig",
-        "y_pred_new",
-        "y_pred_new_actual",
-        "label",
-        "num_nodes",
-        "loss_total",
-        "loss_pred",
-        "loss_graph_dist_training",
-    ]
 
     df_prep = []
     total_attempts = len(cf_examples_per_node)
@@ -106,10 +273,46 @@ def main():
         if example:
             df_prep.append(example[0])
 
+    example_width = len(df_prep[0]) if df_prep else None
+    header = get_result_header(example_width) if example_width is not None else []
+
     df = pd.DataFrame(df_prep, columns=header)
 
+    num_cf_found = len(df)
+    avg_fidelity = 1 - num_cf_found / total_attempts if total_attempts > 0 else None
+    csv_header = [
+        "dataset",
+        "num_cf_found",
+        "avg_fidelity",
+        "graph_distance",
+        "sparsity",
+        "fid_plus_acc",
+        "fid_plus_kl",
+        "fid_plus_tv",
+        "fid_plus_xent",
+        "fid_minus_acc",
+        "fid_minus_kl",
+        "fid_minus_tv",
+        "fid_minus_xent",
+    ]
+
     if df.empty:
-        print("No successful counterfactual examples found.")
+        csv_values = [
+            dataset_name,
+            str(num_cf_found),
+            format_number(avg_fidelity),
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+            "NA",
+        ]
+        print_results(csv_header, csv_values)
         return
 
     graph_distances = []
@@ -130,28 +333,63 @@ def main():
     df["graph_dist"] = graph_distances
     df["num_entries"] = num_incidence_entries
 
-    print(args.results)
-    print("Num cf examples found: {}/{}".format(len(df), total_attempts))
+    # Check consistency between predictions and log-probabilities when present.
+    if {"log_prob_orig", "log_prob_new", "log_prob_new_actual"}.issubset(df.columns):
+        for i in df.index:
+            log_prob_orig = df["log_prob_orig"][i]
+            pred_from_log_prob_orig = torch.argmax(log_prob_orig).item()
+            assert (
+                df["y_pred_orig"][i] == pred_from_log_prob_orig
+            ), f"Inconsistent original prediction at index {i}: y_pred_orig={df['y_pred_orig'][i]}, pred_from_log_prob_orig={pred_from_log_prob_orig}"
 
-    print("Avg fidelity: {}".format(1 - len(df) / total_attempts))
+            y_pred_new = df["y_pred_new"][i]
+            y_pred_new_actual = df["y_pred_new_actual"][i]
+            log_prob_new = df["log_prob_new"][i]
+            log_prob_new_actual = df["log_prob_new_actual"][i]
 
-    metric_name = "hyperedges removed" if args.strategy == "v3" else "entries changed"
-    print(
-        "Average graph distance ({}): {}, std: {}".format(
-            metric_name, np.mean(df["graph_dist"]), np.std(df["graph_dist"])
-        )
-    )
+            pred_from_log_prob = torch.argmax(log_prob_new).item()
+            pred_from_log_prob_actual = torch.argmax(log_prob_new_actual).item()
 
-    print(
-        "Average sparsity: {}, std: {}".format(
-            np.mean(1 - df["graph_dist"] / df["num_entries"]),
-            np.std(1 - df["graph_dist"] / df["num_entries"]),
-        )
-    )
+            assert (
+                y_pred_new == pred_from_log_prob
+            ), f"Inconsistent prediction at index {i}: y_pred_new={y_pred_new}, pred_from_log_prob={pred_from_log_prob}"
+            assert (
+                y_pred_new_actual == pred_from_log_prob_actual
+            ), f"Inconsistent actual prediction at index {i}: y_pred_new_actual={y_pred_new_actual}, pred_from_log_prob_actual={pred_from_log_prob_actual}"
 
-    print(" ")
-    print("***************************************************************")
-    print(" ")
+            if "log_prob_removed_only" in df.columns:
+                log_prob_removed_only = df["log_prob_removed_only"][i]
+                assert (
+                    log_prob_removed_only.shape == log_prob_orig.shape
+                ), f"Inconsistent removed-only log-probability shape at index {i}: removed_only={tuple(log_prob_removed_only.shape)}, original={tuple(log_prob_orig.shape)}"
+                assert torch.isfinite(log_prob_removed_only).all(), (
+                    f"Non-finite removed-only log-probabilities at index {i}: "
+                    f"{log_prob_removed_only}"
+                )
+
+    sparsity_values = [
+        1 - graph_dist / num_entries if num_entries > 0 else np.nan
+        for graph_dist, num_entries in zip(df["graph_dist"], df["num_entries"])
+    ]
+    shypx_metrics = compute_shypx_metrics(df)
+
+    csv_values = [
+        dataset_name,
+        str(num_cf_found),
+        format_number(avg_fidelity),
+        format_summary(df["graph_dist"]),
+        format_summary(sparsity_values),
+        format_summary(shypx_metrics["fid_plus_acc"]) if shypx_metrics else "NA",
+        format_summary(shypx_metrics["fid_plus_kl"]) if shypx_metrics else "NA",
+        format_summary(shypx_metrics["fid_plus_tv"]) if shypx_metrics else "NA",
+        format_summary(shypx_metrics["fid_plus_xent"]) if shypx_metrics else "NA",
+        format_summary(shypx_metrics["fid_minus_acc"]) if shypx_metrics and shypx_metrics["fid_minus_acc"] else "NA",
+        format_summary(shypx_metrics["fid_minus_kl"]) if shypx_metrics and shypx_metrics["fid_minus_kl"] else "NA",
+        format_summary(shypx_metrics["fid_minus_tv"]) if shypx_metrics and shypx_metrics["fid_minus_tv"] else "NA",
+        format_summary(shypx_metrics["fid_minus_xent"]) if shypx_metrics and shypx_metrics["fid_minus_xent"] else "NA",
+    ]
+
+    print_results(csv_header, csv_values)
 
 
 if __name__ == "__main__":

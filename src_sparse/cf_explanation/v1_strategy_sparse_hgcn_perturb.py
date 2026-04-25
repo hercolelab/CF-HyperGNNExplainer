@@ -112,11 +112,23 @@ class HGCN_Perturb(nn.Module):
         num_nodes, num_edges = self.H.shape
 
         self.pi_i_hat = nn.Parameter(
-            torch.ones(num_edges, device=H.device), requires_grad=True
+            torch.full((num_edges,), 10.0, device=H.device), requires_grad=True
         )
 
         self.pi_i = None
         self.H_tilde = None
+        # Flag set when the target's incident masks are essentially all zero
+        # meaning there are no more editable interactions for this node.
+        self.no_more_edits = False
+        self.no_available_edits = False  # Flag for the case where the target has no incident edges at all
+
+    def reset_perturbation(self) -> None:
+        with torch.no_grad():
+            self.pi_i_hat.fill_(10.0)
+        self.pi_i = None
+        self.H_tilde = None
+        self.no_more_edits = False
+        self.no_available_edits = False
 
     def forward(self, x, sub_H):
         sub_H = sub_H.coalesce()
@@ -179,7 +191,38 @@ class HGCN_Perturb(nn.Module):
 
         loss_pred = -F.nll_loss(output, y_pred_orig)
 
-        loss_graph_dist = self.pi_i.shape[0] - self.pi_i.sum()
+        # Differentiable L1 distance between the (soft) perturbation and the
+        # original incidence values for the target node only. This follows the
+        # paper formulation where we regularize the perturbation via L1.
+        s = F.sigmoid(self.pi_i_hat)  # soft mask in (0,1) for each hyperedge
 
-        loss = pred_same * loss_pred + self.beta * loss_graph_dist
+        # Extract the original incidence values and the corresponding edge
+        # indices for the target node. This is robust to isolated nodes.
+        row_vals, col_indices = extract_sparse_row(self.H, self.target_node)
+        print(f"Target node {self.target_node} has {col_indices.numel()} incident hyperedges.")
+        if col_indices.numel() == 0:
+            # No incident hyperedges for the target: no graph distance
+            loss_graph_dist = torch.tensor(0.0, device=output.device)
+            self.no_available_edits = True  # No edges to edit, so we can stop after this
+        else:
+            col_indices = col_indices.to(self.pi_i_hat.device)
+            row_vals = row_vals.to(self.pi_i_hat.device)
+            s_target = s[col_indices]
+            # L1 between original incidence values and the soft mask
+            # mean is used because different nodes have different numbers of incident edges, and we want a consistent scale for the loss across nodes. This also follows the paper formulation where they use the mean perturbation value in the regularization term.
+            loss_graph_dist = torch.mean(torch.abs(row_vals - s_target))
+
+            # Early-stop criterion: if all soft-mask values for the target's
+            # incident edges are essentially zero (<= 1e-3) and the prediction
+            # did not flip, then there are no more edits to try.
+            try:
+                pred_same_val = float(pred_same.item())
+            except Exception:
+                pred_same_val = float(pred_same)
+
+            if pred_same_val == 1.0 and torch.all(s_target < 1e-3):
+                self.no_more_edits = True
+        print(loss_pred.item(), loss_graph_dist.item())
+        #loss = pred_same * loss_pred + self.beta * loss_graph_dist
+        loss = loss_pred + self.beta * loss_graph_dist
         return loss, loss_pred, loss_graph_dist, self.H_tilde

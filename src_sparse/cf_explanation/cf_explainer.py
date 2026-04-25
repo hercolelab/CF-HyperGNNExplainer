@@ -1,16 +1,26 @@
+import math
 from typing import List, Tuple
 
 
 from tqdm import tqdm
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torch.optim as optim
 from torch import Tensor
 from torch.nn.utils import clip_grad_norm_
+from utils import normalize_propagation
 
 
 from .v1_strategy_sparse_hgcn_perturb import HGCN_Perturb as HGCN_Perturb_v1
 from .v3_strategy_sparse_hgcn_perturb import HGCN_Perturb as HGCN_Perturb_v3
+
+
+DEFAULT_INCREMENTAL_BETA_MIN = 1e-6
+DEFAULT_INCREMENTAL_BETA_FACTOR = 2.0
+DEFAULT_INCREMENTAL_BETA_BUDGET = 30
+DEFAULT_INCREMENTAL_BETA_REFINEMENT_RATIO = 1.10
+DEFAULT_DYNAMIC_LR_EPSILON = 1e-8
 
 
 class CFExplainer:
@@ -25,6 +35,7 @@ class CFExplainer:
         sub_feat: Tensor,
         sub_labels: Tensor,
         y_pred_orig: Tensor,
+        log_prob_orig: Tensor,
         beta: float,
         target_node_sub_idx: int,
         device: torch.device,
@@ -53,6 +64,7 @@ class CFExplainer:
         self.sub_feat = sub_feat
         self.sub_labels = sub_labels
         self.y_pred_orig = y_pred_orig
+        self.log_prob_orig = log_prob_orig
         self.beta = beta
         self.target_node_sub_idx = int(target_node_sub_idx)
         self.device = device
@@ -86,16 +98,122 @@ class CFExplainer:
             if name.endswith("weight") or name.endswith("bias"):
                 param.requires_grad = False
 
-        for name, param in self.model.named_parameters():
-            print("orig model requires_grad: ", name, param.requires_grad)
-        for name, param in self.cf_model.named_parameters():
-            print("cf model requires_grad: ", name, param.requires_grad)
+        #for name, param in self.model.named_parameters():
+        #    print("orig model requires_grad: ", name, param.requires_grad)
+        #for name, param in self.cf_model.named_parameters():
+        #    print("cf model requires_grad: ", name, param.requires_grad)
 
         self.node_idx: int = -1
         self.new_idx: int = -1
         self.cf_optimizer: optim.Optimizer | None = None
 
-    def explain(
+    def set_beta(self, beta: float) -> None:
+        self.beta = float(beta)
+        self.cf_model.beta = self.beta
+
+    def build_removed_incidence(self, cf_H: Tensor) -> Tensor:
+        sub_H = self.sub_H.coalesce()
+        cf_H = cf_H.coalesce()
+
+        if sub_H.shape != cf_H.shape:
+            raise ValueError(
+                "The counterfactual incidence matrix must have the same shape as the original subgraph."
+            )
+
+        sub_indices = sub_H.indices()
+        cf_indices = cf_H.indices()
+        # This helper assumes the perturbation strategies preserve the original
+        # sparse COO index pattern and only zero-out removed incidences in the
+        # stored values. If a future refactor drops removed incidences from the
+        # COO indices entirely, this direct value-wise subtraction is no longer
+        # valid and the two sparse tensors must be aligned by index first.
+        if not torch.equal(sub_indices, cf_indices):
+            raise ValueError(
+                "The counterfactual incidence matrix must preserve the original sparse index pattern. "
+                "This helper assumes removed incidences remain as explicit zero-valued COO entries; "
+                "if they are dropped from the sparse indices, the sparse tensors must be aligned by "
+                "index before subtraction."
+            )
+
+        removed_values = sub_H.values() - cf_H.values()
+        removed_mask = removed_values != 0
+
+        if not torch.any(removed_mask):
+            empty_indices = torch.empty(
+                (2, 0),
+                dtype=sub_indices.dtype,
+                device=sub_H.device,
+            )
+            empty_values = torch.empty(
+                (0,),
+                dtype=sub_H.dtype,
+                device=sub_H.device,
+            )
+            return torch.sparse_coo_tensor(
+                empty_indices,
+                empty_values,
+                sub_H.size(),
+                device=sub_H.device,
+                dtype=sub_H.dtype,
+            ).coalesce()
+
+        removed_indices = sub_indices[:, removed_mask]
+        removed_values = removed_values[removed_mask]
+        return torch.sparse_coo_tensor(
+            removed_indices,
+            removed_values,
+            sub_H.size(),
+            device=sub_H.device,
+            dtype=sub_H.dtype,
+        ).coalesce()
+
+    def compute_dynamic_lr(self, num_epochs: int, epsilon: float = 1e-8) -> float:
+        if num_epochs <= 0:
+            raise ValueError("num_epochs must be positive when computing a dynamic learning rate.")
+
+        original_beta = self.beta
+        self.cf_model.reset_perturbation()
+        self.set_beta(0.0)
+        self.cf_model.eval()
+        self.cf_model.zero_grad(set_to_none=True)
+
+        output = self.cf_model.forward(self.sub_feat, self.sub_H)
+        target_output = output[self.target_node_sub_idx].unsqueeze(0)
+        target_label = self.y_pred_orig.view(1)
+        nll = F.nll_loss(target_output, target_label)
+        nll.backward()
+
+        grad = self.cf_model.pi_i_hat.grad
+        grad_norm_sq = 0.0 if grad is None else float(grad.pow(2).sum().item())
+        num_classes = int(target_output.size(1))
+        denominator = float(num_epochs -1) if num_epochs > 1 else 1.0
+        delta = (0.1 + math.log(max(num_classes, 1))) / denominator
+        lr = delta / (grad_norm_sq + epsilon)
+
+        self.cf_model.zero_grad(set_to_none=True)
+        self.cf_model.reset_perturbation()
+        self.set_beta(original_beta)
+
+        return lr
+
+    def resolve_node_learning_rate(
+        self,
+        lr_setting: float | str,
+        num_epochs: int,
+        target_node: int,
+        epsilon: float = DEFAULT_DYNAMIC_LR_EPSILON,
+    ) -> float:
+        if isinstance(lr_setting, float):
+            return lr_setting
+
+        node_lr = self.compute_dynamic_lr(
+            num_epochs=num_epochs,
+            epsilon=epsilon,
+        )
+        print(f"Dynamic learning rate for target node {target_node}: {node_lr:.6g}")
+        return node_lr
+
+    def run_incremental_beta_search(
         self,
         cf_optimizer: str,
         node_idx: int,
@@ -103,7 +221,116 @@ class CFExplainer:
         lr: float,
         n_momentum: float,
         num_epochs: int,
+        beta_min: float = DEFAULT_INCREMENTAL_BETA_MIN,
+        beta_factor: float = DEFAULT_INCREMENTAL_BETA_FACTOR,
+        beta_budget: int = DEFAULT_INCREMENTAL_BETA_BUDGET,
+        beta_refinement_ratio: float = DEFAULT_INCREMENTAL_BETA_REFINEMENT_RATIO,
+    ) -> tuple[List[List], bool, float]:
+        trials_used = 0
+
+        print(f"Starting incremental beta search for target node {node_idx}.")
+        self.set_beta(0.0)
+        best_cf_examples = self.explain(
+            cf_optimizer=cf_optimizer,
+            node_idx=node_idx,
+            new_idx=new_idx,
+            lr=lr,
+            n_momentum=n_momentum,
+            num_epochs=num_epochs,
+        )
+        possible = not self.cf_model.no_more_edits
+        trials_used += 1
+
+        if not best_cf_examples:
+            print(
+                "Incremental beta search stopped at beta=0.0 because no valid "
+                "counterfactual was found."
+            )
+            return [], possible, 0.0
+
+        beta_best = 0.0
+        beta_lo = 0.0
+        best_examples = best_cf_examples
+        beta_hi: float | None = None
+        beta = beta_min
+
+        while trials_used < beta_budget:
+            print(f"Testing beta={beta:.6g} for target node {node_idx}.")
+            self.set_beta(beta)
+            candidate_examples = self.explain(
+                cf_optimizer=cf_optimizer,
+                node_idx=node_idx,
+                new_idx=new_idx,
+                lr=lr,
+                n_momentum=n_momentum,
+                num_epochs=num_epochs,
+            )
+            trials_used += 1
+
+            if candidate_examples:
+                beta_best = beta
+                beta_lo = beta
+                best_examples = candidate_examples
+                beta *= beta_factor
+                continue
+
+            beta_hi = beta
+            break
+
+        if beta_hi is None:
+            print(
+                f"Incremental beta search exhausted its trial budget with "
+                f"best beta={beta_best:.6g}."
+            )
+            return best_examples, possible, beta_best
+
+        if beta_lo == 0.0:
+            print("No successful positive beta was found; returning beta=0.0.")
+            return best_examples, possible, beta_best
+
+        while (
+            trials_used < beta_budget
+            and beta_hi / beta_lo > beta_refinement_ratio
+        ):
+            beta_mid = math.sqrt(beta_lo * beta_hi)
+            print(
+                f"Refining beta in [{beta_lo:.6g}, {beta_hi:.6g}] with "
+                f"midpoint {beta_mid:.6g}."
+            )
+            self.set_beta(beta_mid)
+            candidate_examples = self.explain(
+                cf_optimizer=cf_optimizer,
+                node_idx=node_idx,
+                new_idx=new_idx,
+                lr=lr,
+                n_momentum=n_momentum,
+                num_epochs=num_epochs,
+            )
+            trials_used += 1
+
+            if candidate_examples:
+                beta_best = beta_mid
+                beta_lo = beta_mid
+                best_examples = candidate_examples
+            else:
+                beta_hi = beta_mid
+
+        print(
+            f"Selected beta={beta_best:.6g} for target node {node_idx} "
+            f"after {trials_used} trial(s)."
+        )
+        return best_examples, possible, beta_best
+
+    def explain(
+        self,
+        cf_optimizer: str,
+        node_idx: int,
+        new_idx: int,
+        lr: float | str,
+        n_momentum: float,
+        num_epochs: int,
         patience: int = 5,
+        dynamic_lr_epsilon: float = DEFAULT_DYNAMIC_LR_EPSILON,
     ) -> List[List]:
         """
         Run counterfactual optimization and return the best CF examples
@@ -120,12 +347,26 @@ class CFExplainer:
         """
         self.node_idx = int(node_idx)
         self.new_idx = int(new_idx)
+        self.cf_model.reset_perturbation()
+
+        if isinstance(lr, float):
+            lr = lr
+        else:
+            lr = self.resolve_node_learning_rate(
+                lr_setting=lr,
+                num_epochs=num_epochs,
+                target_node=node_idx,
+                epsilon=dynamic_lr_epsilon,
+            )
 
         if cf_optimizer == "SGD" and n_momentum == 0.0:
             self.cf_optimizer = optim.SGD(self.cf_model.parameters(), lr=lr)
         elif cf_optimizer == "SGD" and n_momentum != 0.0:
             self.cf_optimizer = optim.SGD(
-                self.cf_model.parameters(), lr=lr, nesterov=True, momentum=n_momentum
+                self.cf_model.parameters(),
+                lr=lr,
+                nesterov=True,
+                momentum=n_momentum,
             )
         elif cf_optimizer == "Adadelta":
             self.cf_optimizer = optim.Adadelta(self.cf_model.parameters(), lr=lr)
@@ -141,7 +382,19 @@ class CFExplainer:
         last_pred = -1
 
         for epoch in tqdm(range(num_epochs), desc="Training epochs"):
-            new_example, loss_total, grad_is_zero, current_pred = self.train(epoch)
+            new_example, loss_total, grad_is_zero, current_pred = self.train(
+                epoch,
+                num_epochs=num_epochs,
+            )
+
+            # If the CF model determined there are no further editable
+            # node-hyperedge interactions for the target, stop searching.
+            if getattr(self.cf_model, "no_available_edits", False):
+                print("Stopping search: there are no available edits for target node. Node is isolated in the hypergraph.")
+                break
+            if getattr(self.cf_model, "no_more_edits", False):
+                print("Stopping search: no more editable interactions for target node.")
+                break
 
             if new_example and loss_total < best_loss:
                 best_cf_example.append(new_example)
@@ -166,7 +419,11 @@ class CFExplainer:
         print(" ")
         return best_cf_example
 
-    def train(self, epoch: int) -> Tuple[List, float, bool, int]:
+    def train(
+        self,
+        epoch: int,
+        num_epochs: int,
+    ) -> Tuple[List, float, bool, int]:
         """
         Single training epoch for the counterfactual model
         Returns:
@@ -182,15 +439,20 @@ class CFExplainer:
         self.cf_model.eval()
         self.cf_optimizer.zero_grad()
 
+        # soft mask forward pass to compute losses and gradients
         output = self.cf_model.forward(self.sub_feat, self.sub_H)
 
+        # hard mask forward pass to compute the actual prediction for the new subgraph structure
         output_actual, self.Pi = self.cf_model.forward_pred(self.sub_feat)
 
-        y_pred_new = torch.argmax(output[self.new_idx])
-        y_pred_new_actual = torch.argmax(output_actual[self.new_idx])
+        log_prob_new = output[self.new_idx]
+        log_prob_new_actual = output_actual[self.new_idx]
+
+        y_pred_new = torch.argmax(log_prob_new)
+        y_pred_new_actual = torch.argmax(log_prob_new_actual)
 
         loss_total, loss_pred, loss_graph_dist, cf_H = self.cf_model.loss(
-            output[self.new_idx], self.y_pred_orig, y_pred_new_actual
+            log_prob_new, self.y_pred_orig, y_pred_new_actual
         )
         loss_total.backward()
 
@@ -242,6 +504,12 @@ class CFExplainer:
             else:
                 sub_H_stored = self.sub_H.to_sparse().coalesce()
 
+            removed_H = self.build_removed_incidence(cf_H)
+            with torch.no_grad():
+                S_removed = normalize_propagation(removed_H)
+                removed_output = self.model(self.sub_feat, S_removed)
+            log_prob_removed_only = removed_output[self.new_idx]
+
             cf_stats = [
                 int(self.node_idx),
                 int(self.new_idx),
@@ -255,6 +523,10 @@ class CFExplainer:
                 float(loss_total.item()),
                 float(loss_pred.item()),
                 float(loss_graph_dist.item()),
+                self.log_prob_orig.detach().cpu(),
+                log_prob_new.detach().cpu(),
+                log_prob_new_actual.detach().cpu(),
+                log_prob_removed_only.detach().cpu(),
             ]
 
         return (

@@ -1,0 +1,184 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\setlist[itemize]{topsep=2pt,itemsep=2pt}
+\setlist[enumerate]{topsep=2pt,itemsep=2pt}
+
+\title{Instructions for Counterfactual Search in Hypergraph Classification}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Setup}
+Let $\theta$ denote the continuous mask parameters optimized by gradient-based search, and let
+\[
+g(\theta) := -\log p_y(\theta)
+\]
+be the negative log-likelihood (NLL) of the original predicted class $y$.
+
+The counterfactual objective has the form
+\[
+\mathcal{L}(\theta;\beta) = -L_{\mathrm{pred}}(\theta) + \beta L_{\mathrm{dist}}(\theta),
+\]
+where $\beta \ge 0$ controls the trade-off between prediction flipping and sparsity.
+
+A counterfactual is considered \emph{valid} if the final thresholded solution flips the prediction.
+
+\section{1. Incremental Hyperparameter $\beta$ Setting}
+The goal is to find the \emph{largest} value of $\beta$ that still yields a valid counterfactual within a fixed trial budget.
+
+\subsection*{Procedure}
+\begin{enumerate}
+    \item Solve the counterfactual optimization problem with $\beta = 0$.
+    \item If no valid counterfactual is found, stop: no admissible $\beta > 0$ can be certified with this procedure.
+    \item If a valid counterfactual is found, initialize a small positive value $\beta_{\min}$ (for example $10^{-6}$ or $10^{-4}$).
+    \item Increase $\beta$ geometrically (for example by multiplying by $2$) until the first failure or until the trial budget is exhausted.
+    \item Once a successful value $\beta_{\mathrm{lo}}$ and a failing value $\beta_{\mathrm{hi}}$ are found, refine the search by binary search in log-space.
+    \item Return the largest successful value of $\beta$ found within budget.
+\end{enumerate}
+
+\subsection*{Recommended Search Strategy}
+Use two phases:
+\begin{itemize}
+    \item \textbf{Phase A: Exponential bracketing.} Starting from $\beta_{\min}$, test
+    \[
+    \beta,\; 2\beta,\; 4\beta,\; 8\beta,\; \dots
+    \]
+    until the first failure is observed.
+    \item \textbf{Phase B: Log-binary refinement.} If $\beta_{\mathrm{lo}}$ succeeds and $\beta_{\mathrm{hi}}$ fails, test the geometric midpoint
+    \[
+    \beta_{\mathrm{mid}} = \sqrt{\beta_{\mathrm{lo}}\beta_{\mathrm{hi}}}
+    \]
+    and update the interval accordingly.
+\end{itemize}
+
+\subsection*{Stopping Rule}
+Terminate when either:
+\begin{itemize}
+    \item the trial budget is exhausted, or
+    \item the search interval is sufficiently small for the desired precision.
+\end{itemize}
+
+\subsection*{Pseudo-code}
+\noindent\textbf{Input:} trial budget $B$, initial small positive value $\beta_{\min}$, geometric factor $\gamma > 1$.\\
+\textbf{Assumption:} solving the problem with $\beta=0$ returns a valid counterfactual.
+
+\begin{enumerate}
+    \item Run \texttt{SolveCF}$(0)$.
+    \item If it fails, \textbf{stop}.
+    \item Set:
+    \[
+    \beta_{\mathrm{best}} \leftarrow 0,
+    \qquad
+    \beta_{\mathrm{lo}} \leftarrow 0,
+    \qquad
+    \beta \leftarrow \beta_{\min}.
+    \]
+    \item \textbf{Exponential bracketing:}
+    \begin{enumerate}[label=\alph*)]
+        \item While budget remains and \texttt{SolveCF}$(\beta)$ succeeds:
+        \begin{itemize}
+            \item set $\beta_{\mathrm{best}} \leftarrow \beta$,
+            \item set $\beta_{\mathrm{lo}} \leftarrow \beta$,
+            \item set $\beta \leftarrow \gamma \beta$.
+        \end{itemize}
+        \item If a failure occurs, set $\beta_{\mathrm{hi}} \leftarrow \beta$.
+    \end{enumerate}
+    \item \textbf{Log-binary refinement:}
+    \begin{enumerate}[label=\alph*)]
+        \item While budget remains:
+        \[
+        \beta_{\mathrm{mid}} \leftarrow \sqrt{\beta_{\mathrm{lo}}\beta_{\mathrm{hi}}}.
+        \]
+        \item If \texttt{SolveCF}$(\beta_{\mathrm{mid}})$ succeeds, set
+        \[
+        \beta_{\mathrm{best}} \leftarrow \beta_{\mathrm{mid}},
+        \qquad
+        \beta_{\mathrm{lo}} \leftarrow \beta_{\mathrm{mid}}.
+        \]
+        \item Otherwise set
+        \[
+        \beta_{\mathrm{hi}} \leftarrow \beta_{\mathrm{mid}}.
+        \]
+    \end{enumerate}
+    \item Return $\beta_{\mathrm{best}}$ and its corresponding valid counterfactual.
+\end{enumerate}
+
+\subsection*{Practical Notes}
+\begin{itemize}
+    \item Warm-start each run from the last successful mask to reduce optimization time.
+    \item If optimization is noisy, use a few restarts for each tested $\beta$ and mark success if at least one run flips the prediction.
+    \item The primary selection criterion is validity; among valid solutions, maximize $\beta$.
+\end{itemize}
+
+\section{2. Dynamic Learning Rate Setting}
+Instead of fixing the same learning rate for all datapoints, set it once at the beginning of the optimization from the local gradient at initialization.
+
+\subsection*{Objective for $\beta = 0$}
+When $\beta = 0$, the optimization aims only to increase the NLL of the original class:
+\[
+g(\theta) = -\log p_y(\theta).
+\]
+Assume a gradient ascent update
+\[
+\theta_{1} = \theta_0 + \eta \nabla g(\theta_0).
+\]
+Using a first-order Taylor expansion,
+\[
+g(\theta_1) - g(\theta_0) \approx \eta \|\nabla g(\theta_0)\|_2^2.
+\]
+
+\subsection*{Target Per-Epoch Increase}
+To target the initial NLL increase
+\[
+\Delta = \frac{0.1 + \log N}{\texttt{num\_epochs}},
+\]
+set the learning rate at initialization to
+\[
+\boxed{
+\eta_0 = \frac{\Delta}{\|\nabla_\theta g(\theta_0)\|_2^2 + \varepsilon}
+}
+\]
+with a small numerical constant $\varepsilon > 0$ (for example $10^{-8}$).
+
+Equivalently,
+\[
+\boxed{
+\eta_0 = 
+\frac{(0.1 + \log N)/\texttt{num\_epochs}}
+{\|\nabla_\theta(-\log p_y(\theta_0))\|_2^2 + \varepsilon}
+}
+\]
+
+Then keep the learning rate fixed for all epochs:
+\[
+\eta \leftarrow \eta_0.
+\]
+
+\subsection*{Interpretation}
+This choice makes the \emph{first} NLL increase approximately equal to
+\[
+\frac{0.1 + \log N}{\texttt{num\_epochs}}.
+\]
+After the first step, the same increase is not guaranteed, because the gradient changes along the optimization path. The rule is therefore a \emph{point-dependent initialization} of the learning rate, not a guarantee of constant increase at every epoch.
+
+\section{Summary}
+Use the following two-stage strategy:
+\begin{enumerate}
+    \item For each datapoint, set the learning rate from the initial gradient using
+    \[
+    \eta_0 = \frac{(0.1 + \log N)/\texttt{num\_epochs}}
+    {\|\nabla_\theta(-\log p_y(\theta_0))\|_2^2 + \varepsilon},
+    \]
+    and solve the problem with $\beta = 0$.
+    \item If a valid counterfactual is found, search for the largest admissible $\beta$ with exponential bracketing followed by log-binary refinement.
+\end{enumerate}
+
+\end{document}
