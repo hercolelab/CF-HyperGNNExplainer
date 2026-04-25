@@ -160,7 +160,9 @@ def main() -> None:
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
         checkpoint_args = checkpoint.get("args", {})
         target_node = choose_target_node(dataset)
-        output_path = RESULTS_DIR / f"test_main_explain_{sanitize_name(dataset.casefold())}.pkl"
+        output_path = (
+            RESULTS_DIR / f"test_main_explain_{sanitize_name(dataset.casefold())}.pkl"
+        )
 
         register_artifact_path(manifest, output_path)
         explain_entry = {

@@ -155,7 +155,9 @@ class SHypXExplainer:
 
         expl_rows, expl_cols = expl.indices()
         if expl_rows.numel() == 0:
-            keep_mask = torch.ones(comp_rows.numel(), dtype=torch.bool, device=self.device)
+            keep_mask = torch.ones(
+                comp_rows.numel(), dtype=torch.bool, device=self.device
+            )
         else:
             expl_flat = expl_rows * E + expl_cols
             keep_mask = ~torch.isin(comp_flat, expl_flat)

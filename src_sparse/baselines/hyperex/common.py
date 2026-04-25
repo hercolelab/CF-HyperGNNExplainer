@@ -85,7 +85,9 @@ def local_class_probabilities(global_probs: Tensor, local_to_global: Tensor) -> 
     return global_probs[local_to_global]
 
 
-def local_hop_distances(H_dense: Tensor, target_node_local: int, max_hops: int) -> Tensor:
+def local_hop_distances(
+    H_dense: Tensor, target_node_local: int, max_hops: int
+) -> Tensor:
     n = H_dense.size(0)
     distances = torch.full(
         (n,),

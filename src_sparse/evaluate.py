@@ -7,6 +7,7 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Evaluate CF-HyperGNNExplainer results"
@@ -84,7 +85,7 @@ def extract_dataset_name(results_path: str) -> str:
 
     for prefix in ("cf_examples_", "cf_example_"):
         if result_name.startswith(prefix):
-            remainder = result_name[len(prefix):]
+            remainder = result_name[len(prefix) :]
             return remainder.split("_", 1)[0]
 
     return result_name
@@ -245,9 +246,7 @@ def compute_shypx_metrics(df: pd.DataFrame):
             ).item()
             metrics["fid_minus_kl"].append(max(kl_div_removed_only, 0.0))
 
-            tv_dist_removed_only = 0.5 * torch.sum(
-                torch.abs(p_removed_only - p_orig)
-            )
+            tv_dist_removed_only = 0.5 * torch.sum(torch.abs(p_removed_only - p_orig))
             metrics["fid_minus_tv"].append(tv_dist_removed_only.item())
 
             xent_removed_only = -torch.sum(p_orig * torch.log(p_removed_only))
@@ -338,9 +337,9 @@ def main():
         for i in df.index:
             log_prob_orig = df["log_prob_orig"][i]
             pred_from_log_prob_orig = torch.argmax(log_prob_orig).item()
-            assert (
-                df["y_pred_orig"][i] == pred_from_log_prob_orig
-            ), f"Inconsistent original prediction at index {i}: y_pred_orig={df['y_pred_orig'][i]}, pred_from_log_prob_orig={pred_from_log_prob_orig}"
+            assert df["y_pred_orig"][i] == pred_from_log_prob_orig, (
+                f"Inconsistent original prediction at index {i}: y_pred_orig={df['y_pred_orig'][i]}, pred_from_log_prob_orig={pred_from_log_prob_orig}"
+            )
 
             y_pred_new = df["y_pred_new"][i]
             y_pred_new_actual = df["y_pred_new_actual"][i]
@@ -350,18 +349,18 @@ def main():
             pred_from_log_prob = torch.argmax(log_prob_new).item()
             pred_from_log_prob_actual = torch.argmax(log_prob_new_actual).item()
 
-            assert (
-                y_pred_new == pred_from_log_prob
-            ), f"Inconsistent prediction at index {i}: y_pred_new={y_pred_new}, pred_from_log_prob={pred_from_log_prob}"
-            assert (
-                y_pred_new_actual == pred_from_log_prob_actual
-            ), f"Inconsistent actual prediction at index {i}: y_pred_new_actual={y_pred_new_actual}, pred_from_log_prob_actual={pred_from_log_prob_actual}"
+            assert y_pred_new == pred_from_log_prob, (
+                f"Inconsistent prediction at index {i}: y_pred_new={y_pred_new}, pred_from_log_prob={pred_from_log_prob}"
+            )
+            assert y_pred_new_actual == pred_from_log_prob_actual, (
+                f"Inconsistent actual prediction at index {i}: y_pred_new_actual={y_pred_new_actual}, pred_from_log_prob_actual={pred_from_log_prob_actual}"
+            )
 
             if "log_prob_removed_only" in df.columns:
                 log_prob_removed_only = df["log_prob_removed_only"][i]
-                assert (
-                    log_prob_removed_only.shape == log_prob_orig.shape
-                ), f"Inconsistent removed-only log-probability shape at index {i}: removed_only={tuple(log_prob_removed_only.shape)}, original={tuple(log_prob_orig.shape)}"
+                assert log_prob_removed_only.shape == log_prob_orig.shape, (
+                    f"Inconsistent removed-only log-probability shape at index {i}: removed_only={tuple(log_prob_removed_only.shape)}, original={tuple(log_prob_orig.shape)}"
+                )
                 assert torch.isfinite(log_prob_removed_only).all(), (
                     f"Non-finite removed-only log-probabilities at index {i}: "
                     f"{log_prob_removed_only}"
@@ -383,10 +382,18 @@ def main():
         format_summary(shypx_metrics["fid_plus_kl"]) if shypx_metrics else "NA",
         format_summary(shypx_metrics["fid_plus_tv"]) if shypx_metrics else "NA",
         format_summary(shypx_metrics["fid_plus_xent"]) if shypx_metrics else "NA",
-        format_summary(shypx_metrics["fid_minus_acc"]) if shypx_metrics and shypx_metrics["fid_minus_acc"] else "NA",
-        format_summary(shypx_metrics["fid_minus_kl"]) if shypx_metrics and shypx_metrics["fid_minus_kl"] else "NA",
-        format_summary(shypx_metrics["fid_minus_tv"]) if shypx_metrics and shypx_metrics["fid_minus_tv"] else "NA",
-        format_summary(shypx_metrics["fid_minus_xent"]) if shypx_metrics and shypx_metrics["fid_minus_xent"] else "NA",
+        format_summary(shypx_metrics["fid_minus_acc"])
+        if shypx_metrics and shypx_metrics["fid_minus_acc"]
+        else "NA",
+        format_summary(shypx_metrics["fid_minus_kl"])
+        if shypx_metrics and shypx_metrics["fid_minus_kl"]
+        else "NA",
+        format_summary(shypx_metrics["fid_minus_tv"])
+        if shypx_metrics and shypx_metrics["fid_minus_tv"]
+        else "NA",
+        format_summary(shypx_metrics["fid_minus_xent"])
+        if shypx_metrics and shypx_metrics["fid_minus_xent"]
+        else "NA",
     ]
 
     print_results(csv_header, csv_values)
