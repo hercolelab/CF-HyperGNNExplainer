@@ -99,30 +99,79 @@ class HyperExExplainer:
 
             S_expl = normalize_propagation(expl_H)
             log_p_expl = self.model(self.sub_feat, S_expl)[self.target_node_local]
+            comp_minus_expl_H = self._build_complement_hypergraph(expl_H)
+            S_comp_minus_expl = normalize_propagation(comp_minus_expl_H)
+            log_p_comp_minus_expl = self.model(self.sub_feat, S_comp_minus_expl)[
+                self.target_node_local
+            ]
 
         return {
             "expl_H": expl_H.detach().cpu(),
             "comp_H": self.comp_H.detach().cpu(),
+            "comp_minus_expl_H": comp_minus_expl_H.detach().cpu(),
             "log_p_expl": log_p_expl.detach().cpu(),
+            "log_p_comp_minus_expl": log_p_comp_minus_expl.detach().cpu(),
             "log_p_orig": self.log_p_orig.detach().cpu(),
             "y_pred_orig": self.y_pred_orig,
             "y_pred_expl": int(log_p_expl.argmax().item()),
+            "y_pred_comp_minus_expl": int(log_p_comp_minus_expl.argmax().item()),
             "num_links_expl": int(expl_H._nnz()),
+            "num_links_comp_minus_expl": int(comp_minus_expl_H._nnz()),
             "num_links_comp": self.num_links,
             "edge_scores": edge_scores,
             "local_norm": local_norm,
             "alpha": alpha.detach().cpu(),
         }
 
+    def _build_complement_hypergraph(self, expl_H: torch.Tensor) -> torch.Tensor:
+        comp = self.comp_H.coalesce()
+        expl = expl_H.coalesce()
+
+        comp_rows, comp_cols = comp.indices()
+        if comp_rows.numel() == 0:
+            return torch.sparse_coo_tensor(
+                torch.zeros((2, 0), dtype=torch.long, device=self.device),
+                torch.zeros(0, dtype=comp.dtype, device=self.device),
+                comp.size(),
+                device=self.device,
+                dtype=comp.dtype,
+            ).coalesce()
+
+        E = comp.size(1)
+        comp_flat = comp_rows * E + comp_cols
+
+        expl_rows, expl_cols = expl.indices()
+        if expl_rows.numel() == 0:
+            keep_mask = torch.ones(comp_rows.numel(), dtype=torch.bool, device=self.device)
+        else:
+            expl_flat = expl_rows * E + expl_cols
+            keep_mask = ~torch.isin(comp_flat, expl_flat)
+
+        rows = comp_rows[keep_mask]
+        cols = comp_cols[keep_mask]
+        vals = torch.ones(rows.numel(), dtype=comp.dtype, device=self.device)
+
+        return torch.sparse_coo_tensor(
+            torch.stack([rows, cols]),
+            vals,
+            comp.size(),
+            device=self.device,
+            dtype=comp.dtype,
+        ).coalesce()
+
     def _empty_result(self) -> dict[str, Any]:
         return {
             "expl_H": self.comp_H.detach().cpu(),
             "comp_H": self.comp_H.detach().cpu(),
+            "comp_minus_expl_H": self.comp_H.detach().cpu(),
             "log_p_expl": self.log_p_orig.detach().cpu(),
+            "log_p_comp_minus_expl": self.log_p_orig.detach().cpu(),
             "log_p_orig": self.log_p_orig.detach().cpu(),
             "y_pred_orig": self.y_pred_orig,
             "y_pred_expl": self.y_pred_orig,
+            "y_pred_comp_minus_expl": self.y_pred_orig,
             "num_links_expl": 0,
+            "num_links_comp_minus_expl": 0,
             "num_links_comp": 0,
             "edge_scores": torch.zeros(0),
             "local_norm": torch.zeros(0),
