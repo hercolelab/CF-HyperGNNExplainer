@@ -20,7 +20,7 @@ DEFAULT_INCREMENTAL_BETA_MIN = 1e-6
 DEFAULT_INCREMENTAL_BETA_FACTOR = 2.0
 DEFAULT_INCREMENTAL_BETA_BUDGET = 30
 DEFAULT_INCREMENTAL_BETA_REFINEMENT_RATIO = 1.10
-DEFAULT_DYNAMIC_LR_EPSILON = 1e-8
+DEFAULT_DYNAMIC_LR_EPSILON = 1e-6
 
 
 class CFExplainer:
@@ -167,7 +167,11 @@ class CFExplainer:
             dtype=sub_H.dtype,
         ).coalesce()
 
-    def compute_dynamic_lr(self, num_epochs: int, epsilon: float = 1e-8) -> float:
+    def compute_dynamic_lr(
+        self,
+        num_epochs: int,
+        epsilon: float = DEFAULT_DYNAMIC_LR_EPSILON,
+    ) -> float:
         if num_epochs <= 0:
             raise ValueError("num_epochs must be positive when computing a dynamic learning rate.")
 
@@ -238,7 +242,7 @@ class CFExplainer:
             n_momentum=n_momentum,
             num_epochs=num_epochs,
         )
-        possible = not self.cf_model.no_more_edits
+        possible = bool(best_cf_examples) or not self.cf_model.no_more_edits
         trials_used += 1
 
         if not best_cf_examples:
@@ -387,6 +391,11 @@ class CFExplainer:
                 num_epochs=num_epochs,
             )
 
+            if new_example and loss_total < best_loss:
+                best_cf_example.append(new_example)
+                best_loss = loss_total
+                num_cf_examples += 1
+
             # If the CF model determined there are no further editable
             # node-hyperedge interactions for the target, stop searching.
             if getattr(self.cf_model, "no_available_edits", False):
@@ -395,11 +404,6 @@ class CFExplainer:
             if getattr(self.cf_model, "no_more_edits", False):
                 print("Stopping search: no more editable interactions for target node.")
                 break
-
-            if new_example and loss_total < best_loss:
-                best_cf_example.append(new_example)
-                best_loss = loss_total
-                num_cf_examples += 1
 
             if grad_is_zero and current_pred == last_pred:
                 stop_counter += 1
@@ -454,26 +458,38 @@ class CFExplainer:
         loss_total, loss_pred, loss_graph_dist, cf_H = self.cf_model.loss(
             log_prob_new, self.y_pred_orig, y_pred_new_actual
         )
-        loss_total.backward()
-
-        pi_hat_grad = self.cf_model.pi_i_hat.grad
         grad_is_zero = False
 
-        if pi_hat_grad is None:
-            print(
-                f"⚠️ WARNING (Epoch {epoch + 1}): pi_hat has no gradient (grad is None)"
-            )
-            grad_is_zero = True
-        elif torch.all(pi_hat_grad == 0):
-            print(f"⚠️WARNING (Epoch {epoch + 1}): pi_hat gradient is all zeros")
-            grad_is_zero = True
-        else:
-            grad_norm = pi_hat_grad.norm().item()
-            grad_max = pi_hat_grad.abs().max().item()
-            print(f"pi_hat gradient norm: {grad_norm:.6f}, max: {grad_max:.6f}")
+        stop_requested = bool(
+            getattr(self.cf_model, "no_available_edits", False)
+            or getattr(self.cf_model, "no_more_edits", False)
+        )
 
-        clip_grad_norm_(self.cf_model.parameters(), 2.0)
-        self.cf_optimizer.step()
+        if stop_requested:
+            grad_is_zero = True
+            print(
+                f"Stopping optimization before backward at epoch {epoch + 1}: "
+                "no more editable interactions remain for the target node."
+            )
+        else:
+            loss_total.backward()
+
+            pi_hat_grad = self.cf_model.pi_i_hat.grad
+            if pi_hat_grad is None:
+                print(
+                    f"⚠️ WARNING (Epoch {epoch + 1}): pi_hat has no gradient (grad is None)"
+                )
+                grad_is_zero = True
+            elif torch.all(pi_hat_grad == 0):
+                print(f"⚠️WARNING (Epoch {epoch + 1}): pi_hat gradient is all zeros")
+                grad_is_zero = True
+            else:
+                grad_norm = pi_hat_grad.norm().item()
+                grad_max = pi_hat_grad.abs().max().item()
+                print(f"pi_hat gradient norm: {grad_norm:.6f}, max: {grad_max:.6f}")
+
+            clip_grad_norm_(self.cf_model.parameters(), 2.0)
+            self.cf_optimizer.step()
 
         print(
             "Node idx: {}".format(self.node_idx),

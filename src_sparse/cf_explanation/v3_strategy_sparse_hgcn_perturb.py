@@ -111,9 +111,9 @@ class HGCN_Perturb(nn.Module):
         self.H = H.coalesce()
         num_nodes, num_edges = self.H.shape
 
-        # start from a strong "keep hyperedge" initialization.
+        # Start from a less saturated "keep hyperedge" initialization.
         self.pi_i_hat = nn.Parameter(
-            torch.full((num_edges,), 10.0, device=H.device), requires_grad=True
+            torch.full((num_edges,), 4.0, device=H.device), requires_grad=True
         )
 
         self.pi_i = None
@@ -123,8 +123,7 @@ class HGCN_Perturb(nn.Module):
 
     def reset_perturbation(self) -> None:
         with torch.no_grad():
-            # Keep the same high-logit reset used at initialization.
-            self.pi_i_hat.fill_(10.0)
+            self.pi_i_hat.fill_(4.0)
         self.pi_i = None
         self.H_tilde = None
         self.no_more_edits = False
@@ -178,9 +177,6 @@ class HGCN_Perturb(nn.Module):
         return F.log_softmax(x, dim=1), self.H_tilde
 
     def loss(self, output, y_pred_orig, y_pred_new_actual):
-        # `pred_same` is now used only for early-stop bookkeeping.
-        pred_same = (y_pred_new_actual == y_pred_orig).float()
-
         output = output.unsqueeze(0)
         y_pred_orig = y_pred_orig.unsqueeze(0)
 
@@ -193,10 +189,8 @@ class HGCN_Perturb(nn.Module):
         weights = 1 - self.pi_i[col_indices]
         loss_graph_dist = torch.sum(H_values * weights)
 
-        # Match v1: once every soft mask is effectively zero and the hard
-        # prediction still has not flipped, there is nothing else to edit.
         soft_mask = F.sigmoid(self.pi_i_hat)
-        if bool(pred_same.item()) and torch.all(soft_mask < 1e-3):
+        if torch.all(soft_mask < 1e-3):
             self.no_more_edits = True
 
         cf_H = self.H_tilde

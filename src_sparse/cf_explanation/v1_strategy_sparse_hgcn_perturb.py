@@ -112,7 +112,7 @@ class HGCN_Perturb(nn.Module):
         num_nodes, num_edges = self.H.shape
 
         self.pi_i_hat = nn.Parameter(
-            torch.full((num_edges,), 10.0, device=H.device), requires_grad=True
+            torch.full((num_edges,), 4.0, device=H.device), requires_grad=True
         )
 
         self.pi_i = None
@@ -124,7 +124,7 @@ class HGCN_Perturb(nn.Module):
 
     def reset_perturbation(self) -> None:
         with torch.no_grad():
-            self.pi_i_hat.fill_(10.0)
+            self.pi_i_hat.fill_(4.0)
         self.pi_i = None
         self.H_tilde = None
         self.no_more_edits = False
@@ -184,8 +184,6 @@ class HGCN_Perturb(nn.Module):
         return F.log_softmax(x, dim=1), self.H_tilde
 
     def loss(self, output, y_pred_orig, y_pred_new_actual):
-        pred_same = (y_pred_new_actual == y_pred_orig).float()
-
         output = output.unsqueeze(0)
         y_pred_orig = y_pred_orig.unsqueeze(0)
 
@@ -212,15 +210,7 @@ class HGCN_Perturb(nn.Module):
             # mean is used because different nodes have different numbers of incident edges, and we want a consistent scale for the loss across nodes. This also follows the paper formulation where they use the mean perturbation value in the regularization term.
             loss_graph_dist = torch.mean(torch.abs(row_vals - s_target))
 
-            # Early-stop criterion: if all soft-mask values for the target's
-            # incident edges are essentially zero (<= 1e-3) and the prediction
-            # did not flip, then there are no more edits to try.
-            try:
-                pred_same_val = float(pred_same.item())
-            except Exception:
-                pred_same_val = float(pred_same)
-
-            if pred_same_val == 1.0 and torch.all(s_target < 1e-3):
+            if torch.all(s_target < 1e-3):
                 self.no_more_edits = True
         print(loss_pred.item(), loss_graph_dist.item())
         #loss = pred_same * loss_pred + self.beta * loss_graph_dist

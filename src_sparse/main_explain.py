@@ -341,7 +341,7 @@ def main() -> None:
                 n_momentum=args.n_momentum,
                 num_epochs=args.num_epochs,
             )
-            possible = not explainer.cf_model.no_more_edits
+            possible = bool(best_cf_examples) or not explainer.cf_model.no_more_edits
 
         if possible:
             possible_trials += 1
