@@ -413,7 +413,7 @@ def load_allset_dataset(
                 continue
             try:
                 row_ids.append(int(float(toks[0])))
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 row_ids.append(None)
             # Heuristic: skip first token (id or name), take last token as label
             if len(toks) >= 2:
@@ -726,7 +726,7 @@ def load_citation_dataset(
     def _hyperedge_sort_key(value):
         try:
             return (0, int(value))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return (1, str(value))
 
     rows = []
