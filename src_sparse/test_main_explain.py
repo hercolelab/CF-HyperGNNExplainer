@@ -119,6 +119,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--strategy", choices=("v1", "v3"), default="v1")
     parser.add_argument("--lr", default="0.1")
     parser.add_argument("--n-momentum", type=float, default=0.0)
+    parser.add_argument("--quiet", action="store_true")
     parser.add_argument(
         "--device",
         choices=("auto", "cpu", "cuda"),
@@ -216,6 +217,8 @@ def main() -> None:
             "--output-path",
             str(output_path),
         ]
+        if args.quiet:
+            command.append("--quiet")
 
         print(f"\n== Explaining {dataset} (target node {target_node}) ==")
         print("Command:", " ".join(shlex.quote(part) for part in command))

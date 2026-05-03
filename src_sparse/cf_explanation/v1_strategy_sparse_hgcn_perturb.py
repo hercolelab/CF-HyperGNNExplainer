@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from utils import normalize_propagation
 
+DEFAULT_DYNAMIC_LR_ACTIVE_LOGIT_LIMIT = 6
 
 def sparse_hadamard_product(sparse_tensor, dense_matrix):
     """
@@ -132,6 +133,78 @@ class HGCN_Perturb(nn.Module):
         self.no_more_edits = False
         self.no_available_edits = False
 
+    def format_target_perturbation_debug(
+        self,
+        lr_debug: dict[str, object] | None = None,
+        lr_active_mask: torch.Tensor | None = None,
+        lr_grad: torch.Tensor | None = None,
+    ) -> list[str]:
+        lr_pi_hat = None
+        if lr_debug is not None:
+            lr_pi_hat = lr_debug.get("pi_hat")
+            lr_active_mask = lr_debug.get("active_mask")  # type: ignore[assignment]
+            lr_grad = lr_debug.get("grad")  # type: ignore[assignment]
+
+        _, col_indices = extract_sparse_row(self.H, self.target_node)
+        if col_indices.numel() == 0:
+            return [
+                f"Target-edge debug: node {self.target_node} has no incident hyperedges."
+            ]
+
+        col_indices = col_indices.to(self.pi_i_hat.device)
+        with torch.no_grad():
+            pi_hat_values = self.pi_i_hat[col_indices].detach().cpu()
+            soft_values = torch.sigmoid(self.pi_i_hat[col_indices]).detach().cpu()
+            hard_values = (soft_values >= 0.5).to(torch.int64)
+            grad_values = None
+            lr_active_values = None
+            lr_grad_values = None
+            lr_pi_hat_values = None
+            if self.pi_i_hat.grad is not None:
+                grad_values = self.pi_i_hat.grad[col_indices].detach().cpu()
+            if isinstance(lr_pi_hat, torch.Tensor):
+                lr_pi_hat_values = lr_pi_hat.to(device=self.pi_i_hat.device)[
+                    col_indices
+                ].detach().cpu()
+            if isinstance(lr_active_mask, torch.Tensor):
+                lr_active_values = lr_active_mask.to(
+                    device=self.pi_i_hat.device,
+                    dtype=torch.bool,
+                )[col_indices].detach().cpu()
+            if isinstance(lr_grad, torch.Tensor):
+                lr_grad_values = lr_grad.to(device=self.pi_i_hat.device)[
+                    col_indices
+                ].detach().cpu()
+
+        debug_lines = []
+        debug_lines.append(
+            "Target-edge debug "
+            "(edge_idx, calib_pi_hat, calib_active, calib_grad, "
+            "current_pi_hat, current_sigmoid, current_hard, current_grad):"
+        )
+        for idx, edge_idx in enumerate(col_indices.detach().cpu().tolist()):
+            grad_str = "None"
+            lr_pi_hat_str = "None"
+            lr_active_str = "None"
+            lr_grad_str = "None"
+            if grad_values is not None:
+                grad_str = f"{float(grad_values[idx]):+.6e}"
+            if lr_pi_hat_values is not None:
+                lr_pi_hat_str = f"{float(lr_pi_hat_values[idx]):+.6f}"
+            if lr_active_values is not None:
+                lr_is_active = bool(lr_active_values[idx])
+                lr_active_str = "1" if lr_is_active else "0"
+            if lr_grad_values is not None:
+                lr_grad_str = f"{float(lr_grad_values[idx]):+.6e}"
+            debug_lines.append(
+                f"  edge {edge_idx}: calib_pi_hat={lr_pi_hat_str}, "
+                f"calib_active={lr_active_str}, calib_grad={lr_grad_str}, "
+                f"current_pi_hat={float(pi_hat_values[idx]):+.6f}, "
+                f"current_s={float(soft_values[idx]):.6f}, "
+                f"current_hard={int(hard_values[idx])}, current_grad={grad_str}"
+            )
+        return debug_lines
+
     def forward(self, x, sub_H):
         sub_H = sub_H.coalesce()
 
@@ -199,9 +272,6 @@ class HGCN_Perturb(nn.Module):
         # Extract the original incidence values and the corresponding edge
         # indices for the target node. This is robust to isolated nodes.
         row_vals, col_indices = extract_sparse_row(self.H, self.target_node)
-        print(
-            f"Target node {self.target_node} has {col_indices.numel()} incident hyperedges."
-        )
         if col_indices.numel() == 0:
             # No incident hyperedges for the target: no graph distance
             loss_graph_dist = torch.tensor(0.0, device=output.device)
@@ -215,10 +285,22 @@ class HGCN_Perturb(nn.Module):
             # L1 between original incidence values and the soft mask
             # mean is used because different nodes have different numbers of incident edges, and we want a consistent scale for the loss across nodes. This also follows the paper formulation where they use the mean perturbation value in the regularization term.
             loss_graph_dist = torch.mean(torch.abs(row_vals - s_target))
+            if getattr(self, "verbose", True):
+                print(
+                    "s_target values: ",
+                    s_target.detach().cpu().numpy().mean(),
+                    s_target.detach().cpu().numpy().max(),
+                    s_target.detach().cpu().numpy().min(),
+                )
 
-            if torch.all(s_target < 1e-3):
+            active_upper = torch.sigmoid(
+                s_target.new_tensor(DEFAULT_DYNAMIC_LR_ACTIVE_LOGIT_LIMIT)
+            )
+            active_lower = 1 - active_upper
+            if torch.all((s_target < active_lower) | (s_target > active_upper)):
                 self.no_more_edits = True
-        print(loss_pred.item(), loss_graph_dist.item())
+        if getattr(self, "verbose", True):
+            print(loss_pred.item(), loss_graph_dist.item())
         # loss = pred_same * loss_pred + self.beta * loss_graph_dist
         loss = loss_pred + self.beta * loss_graph_dist
         return loss, loss_pred, loss_graph_dist, self.H_tilde
