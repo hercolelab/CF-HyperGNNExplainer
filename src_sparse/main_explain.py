@@ -15,11 +15,15 @@ from utils import (
     graph_to_hypergraph,
     normalize_propagation,
     get_hyper_neighbourhood_fast,
+    get_hyper_neighbourhood_fast_2,
+    build_incidence_matrix
 )
 
 
 INCREMENTAL_BETA_MODE = "incremental"
 DYNAMIC_LR_MODE = "dynamic"
+DYNAMIC_EPOCHWISE_LR_MODE = "dynamic-epochwise"
+DYNAMIC_POWERS_OF_TWO_LR_MODE = "dynamic-powers-of-two"
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,8 +70,10 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="0.1",
         help=(
-            "Explainer learning rate as a float string, or 'dynamic' to "
-            "derive it from the initial gradient for each node"
+            "Explainer learning rate as a float string, 'dynamic' to derive one "
+            "learning rate from the initial gradient, or 'dynamic-epochwise' "
+            "to precompute one beta-0 dynamic learning rate per epoch, or "
+            "'dynamic-powers-of-two' to precompute only at power-of-two epochs"
         ),
     )
     parser.add_argument(
@@ -113,6 +119,19 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Destination pickle file for CF examples (default: results/cf_examples_<dataset>_<timestamp>.pkl)",
     )
+    parser.add_argument(
+        "--target-edge-debug",
+        action="store_true",
+        help="Print per-epoch target-edge/hyperedge perturbation diagnostics.",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help=(
+            "Suppress per-epoch and per-beta-trial explainer diagnostics. "
+            "--target-edge-debug still prints target-edge diagnostics."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -145,11 +164,23 @@ def parse_beta_setting(beta_arg: str) -> float | str:
 
 
 def parse_lr_setting(lr_arg: str) -> float | str:
-    lr_setting = parse_scalar_or_mode(
-        lr_arg,
-        arg_name="--lr",
-        special_mode=DYNAMIC_LR_MODE,
-    )
+    value = lr_arg.strip().lower()
+    if value in {
+        DYNAMIC_LR_MODE,
+        DYNAMIC_EPOCHWISE_LR_MODE,
+        DYNAMIC_POWERS_OF_TWO_LR_MODE,
+    }:
+        return value
+
+    try:
+        lr_setting = float(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"--lr must be a float string, '{DYNAMIC_LR_MODE}', "
+            f"'{DYNAMIC_EPOCHWISE_LR_MODE}', or "
+            f"'{DYNAMIC_POWERS_OF_TWO_LR_MODE}', got {lr_arg!r}."
+        ) from exc
+
     if isinstance(lr_setting, float) and lr_setting < 0.0:
         raise ValueError("--lr must be non-negative.")
     return lr_setting
@@ -195,8 +226,12 @@ def main() -> None:
         print("Using incremental beta search.")
     if isinstance(lr_setting, float):
         print(f"Using fixed explainer learning rate: {lr_setting:.6g}")
+    elif lr_setting == DYNAMIC_EPOCHWISE_LR_MODE:
+        print("Using dynamic epochwise explainer learning rates.")
+    elif lr_setting == DYNAMIC_POWERS_OF_TWO_LR_MODE:
+        print("Using dynamic powers-of-two explainer learning rates.")
     else:
-        print("Using dynamic per-epoch explainer learning rates.")
+        print("Using dynamic one-shot explainer learning rates.")
 
     # Use Planetoid for Cora/Citeseer/Pubmed, otherwise load from AllSet
     if args.dataset in ("Cora", "Citeseer", "Pubmed"):
@@ -209,6 +244,11 @@ def main() -> None:
         H = graph_to_hypergraph(data.edge_index, data.num_nodes, device=device)
         nfeat = dataset.num_features
         nclass = dataset.num_classes
+
+
+    #    H = build_incidence_matrix(data.edge_index, data.num_nodes, device=device)
+    #    nfeat = dataset.num_features
+    #    nclass = dataset.num_classes
     else:
         from utils.allset_loader import load_allset_dataset
 
@@ -265,6 +305,7 @@ def main() -> None:
         y_pred_orig = y_pred_all[target_node]
         log_prob_orig = y_log_prob_all[target_node]
 
+
         sub_H, sub_feat, sub_labels, node_dict = get_hyper_neighbourhood_fast(
             node_idx=target_node,
             H=H,
@@ -272,6 +313,14 @@ def main() -> None:
             features=data.x,
             labels=data.y,
         )
+
+    #    sub_H, sub_feat, sub_labels, node_dict = get_hyper_neighbourhood_fast_2(
+    #        node_idx=target_node,
+    #        H=H,
+    #        n_hops=args.n_hops,
+    #        features=data.x,
+    #        labels=data.y,
+    #     )
 
         sub_feat = sub_feat.to(device)
         sub_labels = sub_labels.to(device)
@@ -291,6 +340,8 @@ def main() -> None:
             target_node_sub_idx=target_node_sub_idx,
             device=device,
             strategy=args.strategy,
+            target_edge_debug=args.target_edge_debug,
+            quiet=args.quiet,
         )
 
         # Check whether the target node has any incident hyperedges in the
@@ -312,7 +363,9 @@ def main() -> None:
         if isinstance(node_lr, float):
             print(f"Fixed learning rate for target node {target_node}: {node_lr:.6g}")
         else:
-            print(f"Using dynamic learning rate updates for target node {target_node}.")
+            print(
+                f"Using {node_lr} learning rate updates for target node {target_node}."
+            )
 
         node_start = time.time()
         if beta_setting == INCREMENTAL_BETA_MODE:
@@ -331,7 +384,7 @@ def main() -> None:
             print(
                 f"Running counterfactual search for target node {target_node} "
                 f"with beta={selected_beta:.6g} and "
-                f"lr={'dynamic' if isinstance(node_lr, str) else f'{node_lr:.6g}'}"
+                f"lr={node_lr if isinstance(node_lr, str) else f'{node_lr:.6g}'}"
                 "."
             )
             best_cf_examples = explainer.explain(
@@ -361,7 +414,7 @@ def main() -> None:
             print(f"Learning rate for target node {target_node}: {node_lr:.6g}")
         else:
             print(
-                f"Learning rate mode for target node {target_node}: dynamic (recomputed each epoch)"
+                f"Learning rate mode for target node {target_node}: {node_lr}"
             )
 
         best_stats = best_cf_examples[-1]

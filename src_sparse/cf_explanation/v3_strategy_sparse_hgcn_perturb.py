@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from utils import normalize_propagation
-
+DEFAULT_DYNAMIC_LR_ACTIVE_LOGIT_LIMIT = 6
 
 def sparse_hadamard_product(sparse_tensor, dense_matrix):
     """
@@ -129,6 +129,71 @@ class HGCN_Perturb(nn.Module):
         self.no_more_edits = False
         self.no_available_edits = False
 
+    def format_target_perturbation_debug(
+        self,
+        lr_debug: dict[str, object] | None = None,
+    ) -> list[str]:
+        lr_pi_hat = None
+        lr_active_mask = None
+        lr_grad = None
+        if lr_debug is not None:
+            lr_pi_hat = lr_debug.get("pi_hat")
+            lr_active_mask = lr_debug.get("active_mask")
+            lr_grad = lr_debug.get("grad")
+
+        param_indices = torch.arange(
+            self.pi_i_hat.numel(),
+            device=self.pi_i_hat.device,
+            dtype=torch.long,
+        )
+        if param_indices.numel() == 0:
+            return ["Hyperedge debug: no hyperedges in the extracted neighborhood."]
+
+        with torch.no_grad():
+            pi_hat_values = self.pi_i_hat.detach().cpu()
+            soft_values = torch.sigmoid(self.pi_i_hat).detach().cpu()
+            hard_values = (soft_values >= 0.5).to(torch.int64)
+            grad_values = None
+            lr_active_values = None
+            lr_grad_values = None
+            lr_pi_hat_values = None
+            if self.pi_i_hat.grad is not None:
+                grad_values = self.pi_i_hat.grad.detach().cpu()
+            if isinstance(lr_pi_hat, torch.Tensor):
+                lr_pi_hat_values = lr_pi_hat.detach().cpu()
+            if isinstance(lr_active_mask, torch.Tensor):
+                lr_active_values = lr_active_mask.to(dtype=torch.bool).detach().cpu()
+            if isinstance(lr_grad, torch.Tensor):
+                lr_grad_values = lr_grad.detach().cpu()
+
+        debug_lines = []
+        debug_lines.append(
+            "Hyperedge debug "
+            "(edge_idx, calib_pi_hat, calib_active, calib_grad, "
+            "current_pi_hat, current_sigmoid, current_hard, current_grad):"
+        )
+        for edge_idx in param_indices.detach().cpu().tolist():
+            grad_str = "None"
+            lr_pi_hat_str = "None"
+            lr_active_str = "None"
+            lr_grad_str = "None"
+            if grad_values is not None:
+                grad_str = f"{float(grad_values[edge_idx]):+.6e}"
+            if lr_pi_hat_values is not None:
+                lr_pi_hat_str = f"{float(lr_pi_hat_values[edge_idx]):+.6f}"
+            if lr_active_values is not None:
+                lr_active_str = "1" if bool(lr_active_values[edge_idx]) else "0"
+            if lr_grad_values is not None:
+                lr_grad_str = f"{float(lr_grad_values[edge_idx]):+.6e}"
+            debug_lines.append(
+                f"  edge {edge_idx}: calib_pi_hat={lr_pi_hat_str}, "
+                f"calib_active={lr_active_str}, calib_grad={lr_grad_str}, "
+                f"current_pi_hat={float(pi_hat_values[edge_idx]):+.6f}, "
+                f"current_s={float(soft_values[edge_idx]):.6f}, "
+                f"current_hard={int(hard_values[edge_idx])}, current_grad={grad_str}"
+            )
+        return debug_lines
+
     def forward(self, x, sub_H):
         sub_H = sub_H.coalesce()
 
@@ -190,7 +255,11 @@ class HGCN_Perturb(nn.Module):
         loss_graph_dist = torch.sum(H_values * weights)
 
         soft_mask = F.sigmoid(self.pi_i_hat)
-        if torch.all(soft_mask < 1e-3):
+        active_upper = torch.sigmoid(
+            soft_mask.new_tensor(DEFAULT_DYNAMIC_LR_ACTIVE_LOGIT_LIMIT)
+        )
+        active_lower = 1 - active_upper
+        if torch.all((soft_mask < active_lower) | (soft_mask > active_upper)):
             self.no_more_edits = True
 
         cf_H = self.H_tilde
