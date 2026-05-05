@@ -16,6 +16,16 @@ _ALLSET_LE_DATASETS = frozenset(
     }
 )
 
+_PICKLE_BACKED_ALLSET_DATASETS = frozenset(
+    {
+        ("coauthorship", "cora"),
+        ("coauthorship", "dblp"),
+        ("cocitation", "citeseer"),
+        ("cocitation", "cora"),
+        ("cocitation", "pubmed"),
+    }
+)
+
 _EXPECTED_ALLSET_STRUCTURE_STATS = {
     "20newsw100": {
         "num_nodes": 16242,
@@ -97,6 +107,48 @@ def _normalize_allset_dataset_name(name: str) -> str:
         "house-committees-100": "house-committees",
     }
     return aliases.get(normalized, normalized)
+
+
+def _resolve_pickle_backed_dataset_name(name: str) -> Optional[Tuple[str, str]]:
+    normalized = (
+        name.strip()
+        .casefold()
+        .replace("\\", "/")
+        .replace("_", "-")
+        .replace(" ", "-")
+    )
+    if "/" in normalized:
+        family, dataset = normalized.split("/", 1)
+    elif "-" in normalized:
+        family, dataset = normalized.split("-", 1)
+    else:
+        return None
+
+    candidate = (family, dataset)
+    if candidate in _PICKLE_BACKED_ALLSET_DATASETS:
+        return candidate
+
+    return None
+
+
+def _resolve_pickle_backed_family_dir(base_data_dir: str, family: str) -> str:
+    base_data_dir = os.path.abspath(base_data_dir)
+    candidates = []
+    if os.path.basename(os.path.normpath(base_data_dir)).casefold() == family:
+        candidates.append(base_data_dir)
+    candidates.extend(
+        (
+            os.path.join(base_data_dir, family),
+            os.path.join(os.path.dirname(base_data_dir), family),
+            os.path.join(base_data_dir, "AllSet_all_raw_data", family),
+        )
+    )
+
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+
+    return os.path.join(base_data_dir, family)
 
 
 def _resolve_allset_base_data_dir(base_data_dir: Optional[str]) -> str:
@@ -343,10 +395,12 @@ def load_allset_dataset(
     together with a hypergraph incidence matrix `H` (sparse COO tensor).
 
     The function resolves dataset names case-insensitively and dispatches to the
-    correct parser for each raw format family used in the AllSet paper. In
-    particular, datasets such as Zoo, Mushroom, ModelNet40, NTU2012, and
-    20newsW100 are parsed with the original shared node/hyperedge id convention
-    from the official AllSet codebase so their statistics match the paper.
+    correct parser for each raw format family used in the AllSet paper. Pass
+    pickle-backed nested datasets as names such as ``coauthorship-cora`` or
+    ``cocitation/pubmed``. In particular, datasets such as Zoo, Mushroom,
+    ModelNet40, NTU2012, and 20newsW100 are parsed with the original shared
+    node/hyperedge id convention from the official AllSet codebase so their
+    statistics match the paper.
 
     Returns:
         data: lightweight object with `x`, `y`, `train_mask`, `val_mask`,
@@ -356,6 +410,13 @@ def load_allset_dataset(
     """
 
     base_data_dir = _resolve_allset_base_data_dir(base_data_dir)
+    pickle_backed_dataset = _resolve_pickle_backed_dataset_name(dataset_name)
+    if pickle_backed_dataset is not None:
+        family, dataset = pickle_backed_dataset
+        family_dir = _resolve_pickle_backed_family_dir(base_data_dir, family)
+        data, H = load_citation_dataset(path=family_dir, dataset=dataset)
+        return _move_simple_data_to_device(data, H, device)
+
     dataset_folder, canonical_name = _resolve_allset_dataset_folder(
         base_data_dir,
         dataset_name,
@@ -628,6 +689,9 @@ def load_citation_dataset(
     this will read the citation dataset from HyperGCN, and convert it edge_list to
     [[ -V- | -E- ]
      [ -E- | -V- ]]
+
+    Nested coauthorship/cocitation datasets can also be requested through a
+    single name, for example ``coauthorship-cora`` or ``cocitation/pubmed``.
     """
     import pickle
 
@@ -677,7 +741,23 @@ def load_citation_dataset(
 
         return train_mask, val_mask, test_mask
 
+    def _split_indices(split: dict, key: str) -> list[int]:
+        return sorted(
+            {
+                int(node_idx)
+                for node_idx in split.get(key, [])
+                if 0 <= int(node_idx) < num_nodes
+            }
+        )
+
+    pickle_backed_dataset = _resolve_pickle_backed_dataset_name(dataset)
+    family = None
+    if pickle_backed_dataset is not None:
+        family, dataset = pickle_backed_dataset
+
     path = _resolve_root_dir(path)
+    if family is not None:
+        path = _resolve_pickle_backed_family_dir(path, family)
 
     dataset_dir = None
     if os.path.isfile(os.path.join(path, "features.pickle")):
@@ -776,23 +856,17 @@ def load_citation_dataset(
         with open(split_path, "rb") as f:
             split = pickle.load(f)
 
-        train_indices = sorted(
-            {
-                int(node_idx)
-                for node_idx in split.get("train", [])
-                if 0 <= int(node_idx) < num_nodes
-            }
-        )
-        test_indices = sorted(
-            {
-                int(node_idx)
-                for node_idx in split.get("test", [])
-                if 0 <= int(node_idx) < num_nodes
-            }
-        )
+        train_indices = _split_indices(split, "train")
+        has_val_key = "valid" in split or "val" in split
+        if "valid" in split:
+            val_indices = _split_indices(split, "valid")
+        elif "val" in split:
+            val_indices = _split_indices(split, "val")
+        else:
+            val_indices = []
+        test_indices = _split_indices(split, "test")
 
-        val_indices = []
-        if len(train_indices) > 1:
+        if not has_val_key and len(train_indices) > 1:
             rng = np.random.default_rng(seed=42)
             perm = rng.permutation(train_indices)
             val_size = min(
