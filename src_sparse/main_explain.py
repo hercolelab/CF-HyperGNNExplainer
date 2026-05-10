@@ -15,8 +15,6 @@ from utils import (
     graph_to_hypergraph,
     normalize_propagation,
     get_hyper_neighbourhood_fast,
-    get_hyper_neighbourhood_fast_2,
-    build_incidence_matrix
 )
 
 
@@ -293,10 +291,12 @@ def main() -> None:
             )
         target_nodes = [args.target_node]
 
-    cf_examples_per_node: list[list] = []
+    cf_examples_per_node: list = []
     num_successful = 0
     possible_trials = 0
     isolated_nodes = 0
+    non_isolated_times: list[float] = []
+    possible_cf_times: list[float] = []
     total_start = time.time()
 
     for target_node in target_nodes:
@@ -357,6 +357,7 @@ def main() -> None:
                 f"Target node {target_node} has no incident edges in the extracted subgraph. No edits are available."
             )
             isolated_nodes += 1
+            cf_examples_per_node.append(None)
             continue
 
         node_lr = lr_setting
@@ -397,16 +398,26 @@ def main() -> None:
             )
             possible = bool(best_cf_examples) or not explainer.cf_model.no_more_edits
 
+        node_elapsed = time.time() - node_start
+        non_isolated_times.append(node_elapsed)
         if possible:
             possible_trials += 1
-        node_elapsed = time.time() - node_start
+            possible_cf_times.append(node_elapsed)
         print(f"Node {target_node} run time: {node_elapsed:.2f}s")
 
         if not best_cf_examples:
             print(
                 "No counterfactual example changing the prediction was found for this node."
             )
-            cf_examples_per_node.append([])
+            cf_examples_per_node.append(
+                {
+                    "no_cf_found": True,
+                    "possible": possible,
+                    "node_idx": target_node,
+                    "log_prob_orig": log_prob_orig.detach().cpu(),
+                    "y_pred_orig": int(y_pred_orig.item()),
+                }
+            )
             continue
 
         print(f"Selected beta for target node {target_node}: {selected_beta:.6g}")
@@ -435,13 +446,39 @@ def main() -> None:
             )
 
     total_elapsed = time.time() - total_start
-    print(f"\nTotal explainer run time: {total_elapsed:.2f}s")
     num_targets = len(target_nodes)
-    print(f"Isolated Nodes: {isolated_nodes}/{num_targets}")
-    print(f"Nodes where counterfactuals were possible: {possible_trials}/{num_targets}")
-    print(
-        f"Counterfactual examples found: {num_successful}/{possible_trials} (successful/possible)"
+    num_non_isolated = num_targets - isolated_nodes
+    avg_time_non_isolated = (
+        sum(non_isolated_times) / len(non_isolated_times)
+        if non_isolated_times
+        else None
     )
+    avg_time_possible = (
+        sum(possible_cf_times) / len(possible_cf_times)
+        if possible_cf_times
+        else None
+    )
+    print(f"\nTotal explainer run time: {total_elapsed:.2f}s")
+    print(f"Isolated nodes: {isolated_nodes}/{num_targets}")
+    print(f"Non-isolated nodes: {num_non_isolated}/{num_targets}")
+    print(
+        f"Nodes where counterfactuals were possible: {possible_trials}/{num_non_isolated}"
+    )
+    print(
+        f"Counterfactual examples found: {num_successful}/{num_non_isolated} (successful/non-isolated)"
+    )
+    if avg_time_non_isolated is None:
+        print("Average time over non-isolated nodes: NA")
+    else:
+        print(
+            f"Average time over non-isolated nodes: {avg_time_non_isolated:.2f}s"
+        )
+    if avg_time_possible is None:
+        print("Average time over possible counterfactual samples: NA")
+    else:
+        print(
+            f"Average time over possible counterfactual samples: {avg_time_possible:.2f}s"
+        )
 
     if cf_examples_per_node:
         if args.output_path:
@@ -459,7 +496,20 @@ def main() -> None:
             output_path = os.path.join(results_dir, filename)
 
         with open(output_path, "wb") as f:
-            pickle.dump(cf_examples_per_node, f)
+            pickle.dump(
+                {
+                    "dataset": args.dataset,
+                    "cf_examples_per_node": cf_examples_per_node,
+                    "num_targets": num_targets,
+                    "num_isolated": isolated_nodes,
+                    "num_non_isolated": num_non_isolated,
+                    "num_cf_possible": possible_trials,
+                    "num_cf_found": num_successful,
+                    "avg_time_non_isolated": avg_time_non_isolated,
+                    "avg_time_possible": avg_time_possible,
+                },
+                f,
+            )
         print(f"Saved CF examples (including empty entries) to {output_path}")
 
 

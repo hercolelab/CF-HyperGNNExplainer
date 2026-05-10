@@ -43,12 +43,14 @@ def compute_metrics(results: List, complement_log_key: str) -> None:
     non_null = [r for r in results if r is not None]
     total = len(results)
 
+    isolated = sum(1 for r in non_null if r.get("num_links_comp", 0) == 0)
     valid = [
         r
         for r in non_null
         if "log_p_orig" in r
         and complement_log_key in r
         and r[complement_log_key] is not None
+        and r.get("num_links_comp", 0) > 0
     ]
 
     if not non_null:
@@ -68,7 +70,7 @@ def compute_metrics(results: List, complement_log_key: str) -> None:
         return
 
     N = len(valid)
-    missing = len(non_null) - N
+    missing = len(non_null) - N - isolated
 
     fidp_acc: list[float] = []
     fidp_kl: list[float] = []
@@ -98,6 +100,8 @@ def compute_metrics(results: List, complement_log_key: str) -> None:
         fidp_xent.append(xent)
 
     print(f"\nSHypX fidelity+ evaluation  ({N} / {total} nodes with usable entries)\n")
+    if isolated > 0:
+        print(f"Excluded {isolated} isolated node(s) (num_links_comp == 0) from the average.\n")
     if missing > 0:
         print(f"Skipped {missing} non-null result(s) missing '{complement_log_key}'.\n")
 

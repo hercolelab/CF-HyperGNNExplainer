@@ -33,7 +33,9 @@ def parse_args() -> argparse.Namespace:
 
 def compute_metrics(results: List) -> None:
     """Compute and print all fidelity and concision metrics."""
-    valid = [r for r in results if r is not None]
+    non_null = [r for r in results if r is not None]
+    isolated = sum(1 for r in non_null if r.get("num_links_comp", 0) == 0)
+    valid = [r for r in non_null if r.get("num_links_comp", 0) > 0]
     total = len(results)
 
     if not valid:
@@ -76,6 +78,8 @@ def compute_metrics(results: List) -> None:
         densities.append(r["num_links_expl"] / comp if comp > 0 else 0.0)
 
     print(f"\nSHypX fidelity- evaluation  ({N} / {total} valid)\n")
+    if isolated > 0:
+        print(f"Excluded {isolated} isolated node(s) (num_links_comp == 0) from the average.\n")
     print(f"  {'Metric':<22} {'Mean':>10} {'Std':>10}")
     print("  " + "-" * 44)
 

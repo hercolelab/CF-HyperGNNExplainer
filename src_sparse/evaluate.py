@@ -241,9 +241,9 @@ def compute_shypx_metrics(df: pd.DataFrame):
 
             metrics["fid_minus_acc"].append(float(y_pred_orig != y_pred_removed_only))
 
-            kl_div_removed_only = F.kl_div(
-                p_orig.log(), p_removed_only, reduction="sum"
-            ).item()
+            kl_div_removed_only = (
+                p_removed_only * (p_removed_only / p_orig).log()
+            ).sum().item()
             metrics["fid_minus_kl"].append(max(kl_div_removed_only, 0.0))
 
             tv_dist_removed_only = 0.5 * torch.sum(torch.abs(p_removed_only - p_orig))
@@ -255,6 +255,25 @@ def compute_shypx_metrics(df: pd.DataFrame):
     return metrics
 
 
+def failure_contribution(log_prob_orig, eps=1e-10):
+    """Per-failure contribution to non-flipping fidelity metrics: zero
+    distances, self-entropy for cross-entropies, no perturbation."""
+    p_orig = torch.exp(log_prob_orig).clamp(min=eps)
+    self_xent = -torch.sum(p_orig * torch.log(p_orig)).item()
+    return {
+        "graph_dist": 0.0,
+        "sparsity": 1.0,
+        "fid_plus_acc": 0.0,
+        "fid_plus_kl": 0.0,
+        "fid_plus_tv": 0.0,
+        "fid_plus_xent": self_xent,
+        "fid_minus_acc": 0.0,
+        "fid_minus_kl": 0.0,
+        "fid_minus_tv": 0.0,
+        "fid_minus_xent": self_xent,
+    }
+
+
 def main():
     args = parse_args()
     dataset_name = extract_dataset_name(args.results)
@@ -263,25 +282,48 @@ def main():
         raise FileNotFoundError(f"Results file not found: {args.results}")
 
     with open(args.results, "rb") as f:
-        cf_examples_per_node = pickle.load(f)
+        payload = pickle.load(f)
+
+    if isinstance(payload, dict):
+        dataset_name = payload.get("dataset", dataset_name)
+        cf_examples_per_node = payload["cf_examples_per_node"]
+        num_cf_possible = payload.get("num_cf_possible")
+        num_non_isolated = payload.get("num_non_isolated")
+        avg_cf_find_time = payload.get("avg_time_possible")
+    else:
+        cf_examples_per_node = payload
+        num_cf_possible = num_non_isolated = avg_cf_find_time = None
 
     df_prep = []
-    total_attempts = len(cf_examples_per_node)
+    failure_entries: list[dict] = []
+    isolated_count = 0
 
     for example in cf_examples_per_node:
-        if example:
+        if example is None:
+            isolated_count += 1
+        elif isinstance(example, dict):
+            failure_entries.append(example)
+        elif example:
             df_prep.append(example[0])
+
+    if num_non_isolated is None:
+        num_non_isolated = len(cf_examples_per_node) - isolated_count
 
     example_width = len(df_prep[0]) if df_prep else None
     header = get_result_header(example_width) if example_width is not None else []
-
     df = pd.DataFrame(df_prep, columns=header)
+    has_removed_only = example_width == 16 if example_width is not None else True
 
     num_cf_found = len(df)
-    avg_fidelity = 1 - num_cf_found / total_attempts if total_attempts > 0 else None
+    if num_cf_possible is None:
+        num_cf_possible = num_cf_found
+
     csv_header = [
         "dataset",
+        "scope",
         "num_cf_found",
+        "denominator",
+        "average_cf_find_time",
         "avg_fidelity",
         "graph_distance",
         "sparsity",
@@ -294,25 +336,6 @@ def main():
         "fid_minus_tv",
         "fid_minus_xent",
     ]
-
-    if df.empty:
-        csv_values = [
-            dataset_name,
-            str(num_cf_found),
-            format_number(avg_fidelity),
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-        ]
-        print_results(csv_header, csv_values)
-        return
 
     graph_distances = []
     num_incidence_entries = []
@@ -370,33 +393,71 @@ def main():
         1 - graph_dist / num_entries if num_entries > 0 else np.nan
         for graph_dist, num_entries in zip(df["graph_dist"], df["num_entries"])
     ]
-    shypx_metrics = compute_shypx_metrics(df)
+    shypx_metrics = compute_shypx_metrics(df) or {}
 
-    csv_values = [
-        dataset_name,
-        str(num_cf_found),
-        format_number(avg_fidelity),
-        format_summary(df["graph_dist"]),
-        format_summary(sparsity_values),
-        format_summary(shypx_metrics["fid_plus_acc"]) if shypx_metrics else "NA",
-        format_summary(shypx_metrics["fid_plus_kl"]) if shypx_metrics else "NA",
-        format_summary(shypx_metrics["fid_plus_tv"]) if shypx_metrics else "NA",
-        format_summary(shypx_metrics["fid_plus_xent"]) if shypx_metrics else "NA",
-        format_summary(shypx_metrics["fid_minus_acc"])
-        if shypx_metrics and shypx_metrics["fid_minus_acc"]
-        else "NA",
-        format_summary(shypx_metrics["fid_minus_kl"])
-        if shypx_metrics and shypx_metrics["fid_minus_kl"]
-        else "NA",
-        format_summary(shypx_metrics["fid_minus_tv"])
-        if shypx_metrics and shypx_metrics["fid_minus_tv"]
-        else "NA",
-        format_summary(shypx_metrics["fid_minus_xent"])
-        if shypx_metrics and shypx_metrics["fid_minus_xent"]
-        else "NA",
+    success_values = {
+        "graph_dist": list(df["graph_dist"]),
+        "sparsity": list(sparsity_values),
+        **{k: list(v) for k, v in shypx_metrics.items()},
+    }
+
+    possible_failures = [f for f in failure_entries if f.get("possible")]
+    impossible_failures = [f for f in failure_entries if not f.get("possible")]
+    possible_contribs = [failure_contribution(f["log_prob_orig"]) for f in possible_failures]
+    impossible_contribs = [failure_contribution(f["log_prob_orig"]) for f in impossible_failures]
+
+    metric_keys = [
+        "graph_dist",
+        "sparsity",
+        "fid_plus_acc",
+        "fid_plus_kl",
+        "fid_plus_tv",
+        "fid_plus_xent",
+        "fid_minus_acc",
+        "fid_minus_kl",
+        "fid_minus_tv",
+        "fid_minus_xent",
     ]
 
-    print_results(csv_header, csv_values)
+    def values_for(scope: str, key: str) -> list:
+        base = success_values.get(key, [])
+        if scope == "found":
+            return base
+        if not has_removed_only and key.startswith("fid_minus"):
+            return base
+        if scope == "possible":
+            return base + [c[key] for c in possible_contribs]
+        return base + [c[key] for c in possible_contribs + impossible_contribs]
+
+    rows: list[list[str]] = []
+    for scope, denom in (
+        ("non_isolated", num_non_isolated),
+        ("possible", num_cf_possible),
+        ("found", num_cf_found),
+    ):
+        avg_fid = (
+            1 - num_cf_found / denom if denom and denom > 0 else None
+        )
+        row = [
+            dataset_name,
+            scope,
+            str(num_cf_found),
+            format_number(denom),
+            format_number(avg_cf_find_time),
+            format_number(avg_fid),
+        ]
+        for key in metric_keys:
+            row.append(format_summary(values_for(scope, key)))
+        rows.append(row)
+
+    print(",".join(csv_header))
+    for row in rows:
+        print(",".join(row))
+    print()
+    for row in rows:
+        for key, value in zip(csv_header, row):
+            print(f"{key}: {value}")
+        print()
 
 
 if __name__ == "__main__":
