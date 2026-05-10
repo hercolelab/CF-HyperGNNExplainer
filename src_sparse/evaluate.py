@@ -312,6 +312,7 @@ def main():
     example_width = len(df_prep[0]) if df_prep else None
     header = get_result_header(example_width) if example_width is not None else []
     df = pd.DataFrame(df_prep, columns=header)
+    has_removed_only = example_width == 16 if example_width is not None else True
 
     num_cf_found = len(df)
     if num_cf_possible is None:
@@ -422,7 +423,7 @@ def main():
         base = success_values.get(key, [])
         if scope == "found":
             return base
-        if not base and key.startswith("fid_minus"):
+        if not has_removed_only and key.startswith("fid_minus"):
             return base
         if scope == "possible":
             return base + [c[key] for c in possible_contribs]
