@@ -130,6 +130,12 @@ def parse_args() -> argparse.Namespace:
             "--target-edge-debug still prints target-edge diagnostics."
         ),
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Seed used when subsampling AllSet test nodes (default: 0).",
+    )
     return parser.parse_args()
 
 
@@ -283,6 +289,15 @@ def main() -> None:
         target_nodes = [int(idx) for idx in torch.where(data.test_mask)[0]]
         if not target_nodes:
             raise ValueError(f"Dataset {args.dataset} has no test nodes.")
+        is_allset = args.dataset not in ("Cora", "Citeseer", "Pubmed")
+        if is_allset and len(target_nodes) > 500:
+            generator = torch.Generator().manual_seed(args.seed)
+            perm = torch.randperm(len(target_nodes), generator=generator)[:500]
+            target_nodes = sorted(target_nodes[int(i)] for i in perm)
+            print(
+                f"Subsampled {len(target_nodes)} test node(s) from AllSet dataset "
+                f"{args.dataset} with seed {args.seed}."
+            )
         print(f"Explaining {len(target_nodes)} node(s) from the test set.")
     else:
         if not 0 <= args.target_node < data.num_nodes:
