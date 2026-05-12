@@ -112,6 +112,9 @@ class CFExplainer:
             beta=self.beta,
         ).to(self.device)
         self.cf_model.verbose = not self.quiet
+        set_target_edge_debug = getattr(self.cf_model, "set_target_edge_debug", None)
+        if callable(set_target_edge_debug):
+            set_target_edge_debug(self.target_edge_debug)
 
         self.cf_model.load_state_dict(self.model.state_dict(), strict=False)
 
@@ -363,8 +366,17 @@ class CFExplainer:
 
     def _dynamic_lr_active_mask(self) -> Tensor:
         pi_hat = self.cf_model.pi_i_hat.detach()
+        if self.strategy == "v3":
+            dynamic_lr_active_mask = getattr(
+                self.cf_model,
+                "dynamic_lr_active_mask",
+                None,
+            )
+            if callable(dynamic_lr_active_mask):
+                return dynamic_lr_active_mask(DEFAULT_DYNAMIC_LR_ACTIVE_LOGIT_LIMIT)
         return self._learning_rate_scope_mask() & (
-            pi_hat.abs() < DEFAULT_DYNAMIC_LR_ACTIVE_LOGIT_LIMIT
+            torch.isfinite(pi_hat)
+            & (pi_hat.abs() < DEFAULT_DYNAMIC_LR_ACTIVE_LOGIT_LIMIT)
         )
 
     @staticmethod
@@ -439,21 +451,30 @@ class CFExplainer:
             if self.target_edge_debug
             else None
         )
+        active_mask = self._dynamic_lr_active_mask()
 
-        output = self.cf_model.forward(self.sub_feat, self.sub_H)
-        target_output = output[self.target_node_sub_idx].unsqueeze(0)
-        target_label = self.y_pred_orig.view(1)
-        dynamic_lr_loss = -F.nll_loss(target_output, target_label)
-        dynamic_lr_loss.backward()
-
-        grad = self.cf_model.pi_i_hat.grad
-        lr = self._dynamic_lr_from_grad(grad, num_epochs)
+        grad = None
+        if bool(active_mask.any().item()):
+            output = self.cf_model.forward(self.sub_feat, self.sub_H)
+            target_output = output[self.target_node_sub_idx].unsqueeze(0)
+            target_label = self.y_pred_orig.view(1)
+            dynamic_lr_loss = -F.nll_loss(target_output, target_label)
+            dynamic_lr_loss.backward()
+            grad = self.cf_model.pi_i_hat.grad
+            lr = self._dynamic_lr_from_grad(
+                grad,
+                num_epochs,
+                active_mask=active_mask,
+            )
+        else:
+            lr = 0.0
         self._current_lr_debug_by_epoch = []
         if self.target_edge_debug:
             self._current_lr_debug_by_epoch = [
                 self._build_lr_debug_entry(
                     lr=lr,
                     grad=grad,
+                    active_mask=active_mask,
                     pi_hat=pi_hat_snapshot,
                 )
             ]
@@ -514,17 +535,21 @@ class CFExplainer:
                 )
                 active_mask = self._dynamic_lr_active_mask()
 
-                output = self.cf_model.forward(self.sub_feat, self.sub_H)
-                target_output = output[self.target_node_sub_idx].unsqueeze(0)
-                dynamic_lr_loss = -F.nll_loss(target_output, target_label)
-                dynamic_lr_loss.backward()
+                grad = None
+                if bool(active_mask.any().item()):
+                    output = self.cf_model.forward(self.sub_feat, self.sub_H)
+                    target_output = output[self.target_node_sub_idx].unsqueeze(0)
+                    dynamic_lr_loss = -F.nll_loss(target_output, target_label)
+                    dynamic_lr_loss.backward()
 
-                grad = self.cf_model.pi_i_hat.grad
-                lr = self._dynamic_lr_from_grad(
-                    grad,
-                    num_epochs,
-                    active_mask=active_mask,
-                )
+                    grad = self.cf_model.pi_i_hat.grad
+                    lr = self._dynamic_lr_from_grad(
+                        grad,
+                        num_epochs,
+                        active_mask=active_mask,
+                    )
+                else:
+                    lr = 0.0
                 epochwise_lrs.append(float(lr))
                 if self.target_edge_debug:
                     lr_debug_by_epoch.append(
@@ -536,9 +561,10 @@ class CFExplainer:
                         )
                     )
 
-                self._set_optimizer_lr(calibration_optimizer, lr)
-                clip_grad_norm_(self.cf_model.parameters(), 2.0)
-                calibration_optimizer.step()
+                if grad is not None:
+                    self._set_optimizer_lr(calibration_optimizer, lr)
+                    clip_grad_norm_(self.cf_model.parameters(), 2.0)
+                    calibration_optimizer.step()
         finally:
             self.cf_model.zero_grad(set_to_none=True)
             self.cf_model.reset_perturbation()
@@ -607,17 +633,21 @@ class CFExplainer:
                 )
                 active_mask = self._dynamic_lr_active_mask()
 
-                output = self.cf_model.forward(self.sub_feat, self.sub_H)
-                target_output = output[self.target_node_sub_idx].unsqueeze(0)
-                dynamic_lr_loss = -F.nll_loss(target_output, target_label)
-                dynamic_lr_loss.backward()
+                grad = None
+                if bool(active_mask.any().item()):
+                    output = self.cf_model.forward(self.sub_feat, self.sub_H)
+                    target_output = output[self.target_node_sub_idx].unsqueeze(0)
+                    dynamic_lr_loss = -F.nll_loss(target_output, target_label)
+                    dynamic_lr_loss.backward()
 
-                grad = self.cf_model.pi_i_hat.grad
-                lr = self._dynamic_lr_from_grad(
-                    grad,
-                    num_epochs,
-                    active_mask=active_mask,
-                )
+                    grad = self.cf_model.pi_i_hat.grad
+                    lr = self._dynamic_lr_from_grad(
+                        grad,
+                        num_epochs,
+                        active_mask=active_mask,
+                    )
+                else:
+                    lr = 0.0
                 checkpoint_lrs.append(float(lr))
                 if self.target_edge_debug:
                     checkpoint_debug.append(
@@ -629,9 +659,10 @@ class CFExplainer:
                         )
                     )
 
-                self._set_optimizer_lr(calibration_optimizer, lr)
-                clip_grad_norm_(self.cf_model.parameters(), 2.0)
-                calibration_optimizer.step()
+                if grad is not None:
+                    self._set_optimizer_lr(calibration_optimizer, lr)
+                    clip_grad_norm_(self.cf_model.parameters(), 2.0)
+                    calibration_optimizer.step()
         finally:
             self.cf_model.zero_grad(set_to_none=True)
             self.cf_model.reset_perturbation()
@@ -845,6 +876,7 @@ class CFExplainer:
                 lr_mode_label = "dynamic powers-of-two"
             self._use_epochwise_dynamic_lr = True
             lr = scheduled_lrs[0] if scheduled_lrs else 0.0
+
             if debug_learning_rates and not self.quiet:
                 formatted_lrs = self._format_epochwise_learning_rates(
                     self._current_lr_checkpoint_values,
