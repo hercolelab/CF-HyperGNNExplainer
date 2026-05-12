@@ -112,9 +112,6 @@ class CFExplainer:
             beta=self.beta,
         ).to(self.device)
         self.cf_model.verbose = not self.quiet
-        set_target_edge_debug = getattr(self.cf_model, "set_target_edge_debug", None)
-        if callable(set_target_edge_debug):
-            set_target_edge_debug(self.target_edge_debug)
 
         self.cf_model.load_state_dict(self.model.state_dict(), strict=False)
 
@@ -271,6 +268,28 @@ class CFExplainer:
                 "active_mask": active_mask_cpu,
             }
         )
+        if self.strategy == "v3":
+            reachability_state = self._v3_reachability_state(pi_hat=pi_hat)
+            live_edges = reachability_state["live_edges"]
+            reachable_edges = reachability_state["reachable_edges"]
+            edge_depth = reachability_state["edge_depth"]
+            if isinstance(live_edges, torch.Tensor):
+                entry["reachability_live_mask"] = (
+                    live_edges.detach().to(dtype=torch.bool).cpu().clone()
+                )
+            if isinstance(reachable_edges, torch.Tensor):
+                entry["reachability_mask"] = (
+                    reachable_edges.detach().to(dtype=torch.bool).cpu().clone()
+                )
+            if isinstance(edge_depth, torch.Tensor):
+                entry["reachability_edge_depth"] = (
+                    edge_depth.detach().to(dtype=torch.long).cpu().clone()
+                )
+            entry["reachability_summary"] = {
+                "live_edges": int(reachability_state["num_live_edges"]),
+                "reachable_edges": int(reachability_state["num_reachable_edges"]),
+                "reachable_nodes": int(reachability_state["num_reachable_nodes"]),
+            }
         return entry
 
     def _get_lr_debug_for_epoch(self, epoch: int) -> dict[str, object] | None:
@@ -349,8 +368,84 @@ class CFExplainer:
             return bool(torch.all(soft_mask[target_cols] < 1e-3).item())
         return bool(torch.all(soft_mask < 1e-3).item())
 
-    def _learning_rate_scope_mask(self) -> Tensor:
-        pi_hat = self.cf_model.pi_i_hat
+    def _v3_reachability_state(
+        self,
+        pi_hat: Tensor | None = None,
+    ) -> dict[str, Tensor | int]:
+        H_coalesced = self.cf_model.H.coalesce()
+        num_nodes, num_edges = H_coalesced.shape
+        device = self.cf_model.pi_i_hat.device
+        dtype = H_coalesced.dtype
+
+        if pi_hat is None:
+            pi_hat_for_reachability = self.cf_model.pi_i_hat.detach()
+        else:
+            pi_hat_for_reachability = pi_hat.detach().to(device=device)
+
+        if pi_hat_for_reachability.numel() != num_edges:
+            raise ValueError(
+                "v3 reachability expects one perturbation logit per hyperedge."
+            )
+
+        live_edges = torch.isfinite(pi_hat_for_reachability) & (
+            pi_hat_for_reachability > -DEFAULT_DYNAMIC_LR_ACTIVE_LOGIT_LIMIT
+        )
+        reachable_edges = torch.zeros(num_edges, dtype=torch.bool, device=device)
+        reachable_nodes = torch.zeros(num_nodes, dtype=torch.bool, device=device)
+        edge_depth = torch.full((num_edges,), -1, dtype=torch.long, device=device)
+
+        if num_nodes == 0 or num_edges == 0:
+            return {
+                "live_edges": live_edges,
+                "reachable_edges": reachable_edges,
+                "edge_depth": edge_depth,
+                "num_live_edges": int(live_edges.sum().item()),
+                "num_reachable_edges": 0,
+                "num_reachable_nodes": 0,
+            }
+
+        if not (0 <= self.target_node_sub_idx < num_nodes):
+            raise IndexError(
+                f"target node {self.target_node_sub_idx} is out of bounds for "
+                f"subgraph with {num_nodes} nodes"
+            )
+
+        frontier_nodes = torch.zeros(num_nodes, dtype=torch.bool, device=device)
+        reachable_nodes[self.target_node_sub_idx] = True
+        frontier_nodes[self.target_node_sub_idx] = True
+        H_t = H_coalesced.t().coalesce()
+        depth = 0
+
+        while bool(frontier_nodes.any().item()):
+            frontier_column = frontier_nodes.to(dtype=dtype).unsqueeze(1)
+            edge_scores = torch.sparse.mm(H_t, frontier_column).view(-1)
+            new_edges = (edge_scores != 0) & live_edges & ~reachable_edges
+
+            if not bool(new_edges.any().item()):
+                break
+
+            reachable_edges |= new_edges
+            edge_depth[new_edges] = depth
+
+            edge_column = new_edges.to(dtype=dtype).unsqueeze(1)
+            node_scores = torch.sparse.mm(H_coalesced, edge_column).view(-1)
+            new_nodes = (node_scores != 0) & ~reachable_nodes
+
+            reachable_nodes |= new_nodes
+            frontier_nodes = new_nodes
+            depth += 1
+
+        return {
+            "live_edges": live_edges,
+            "reachable_edges": reachable_edges,
+            "edge_depth": edge_depth,
+            "num_live_edges": int(live_edges.sum().item()),
+            "num_reachable_edges": int(reachable_edges.sum().item()),
+            "num_reachable_nodes": int(reachable_nodes.sum().item()),
+        }
+
+    def _learning_rate_scope_mask(self, pi_hat: Tensor | None = None) -> Tensor:
+        pi_hat = self.cf_model.pi_i_hat if pi_hat is None else pi_hat
         if self.strategy == "v1":
             mask = torch.zeros_like(pi_hat, dtype=torch.bool)
             H_coalesced = self.cf_model.H.coalesce()
@@ -361,23 +456,24 @@ class CFExplainer:
                 mask[target_cols] = True
             return mask
         if self.strategy == "v3":
-            return torch.ones_like(pi_hat, dtype=torch.bool)
+            reachability_state = self._v3_reachability_state(pi_hat=pi_hat)
+            return reachability_state["reachable_edges"]  # type: ignore[return-value]
         raise ValueError(f"Unknown strategy: {self.strategy}")
 
     def _dynamic_lr_active_mask(self) -> Tensor:
         pi_hat = self.cf_model.pi_i_hat.detach()
-        if self.strategy == "v3":
-            dynamic_lr_active_mask = getattr(
-                self.cf_model,
-                "dynamic_lr_active_mask",
-                None,
-            )
-            if callable(dynamic_lr_active_mask):
-                return dynamic_lr_active_mask(DEFAULT_DYNAMIC_LR_ACTIVE_LOGIT_LIMIT)
-        return self._learning_rate_scope_mask() & (
-            torch.isfinite(pi_hat)
+        return (
+            self._learning_rate_scope_mask(pi_hat=pi_hat)
+            & torch.isfinite(pi_hat)
             & (pi_hat.abs() < DEFAULT_DYNAMIC_LR_ACTIVE_LOGIT_LIMIT)
         )
+
+    def _update_v3_no_more_edits(self) -> None:
+        if self.strategy != "v3":
+            return
+        active_mask = self._dynamic_lr_active_mask()
+        if not bool(active_mask.any().item()):
+            self.cf_model.no_more_edits = True
 
     @staticmethod
     def _power_of_two_epochs(num_epochs: int) -> list[int]:
@@ -453,21 +549,18 @@ class CFExplainer:
         )
         active_mask = self._dynamic_lr_active_mask()
 
-        grad = None
-        if bool(active_mask.any().item()):
-            output = self.cf_model.forward(self.sub_feat, self.sub_H)
-            target_output = output[self.target_node_sub_idx].unsqueeze(0)
-            target_label = self.y_pred_orig.view(1)
-            dynamic_lr_loss = -F.nll_loss(target_output, target_label)
-            dynamic_lr_loss.backward()
-            grad = self.cf_model.pi_i_hat.grad
-            lr = self._dynamic_lr_from_grad(
-                grad,
-                num_epochs,
-                active_mask=active_mask,
-            )
-        else:
-            lr = 0.0
+        output = self.cf_model.forward(self.sub_feat, self.sub_H)
+        target_output = output[self.target_node_sub_idx].unsqueeze(0)
+        target_label = self.y_pred_orig.view(1)
+        dynamic_lr_loss = -F.nll_loss(target_output, target_label)
+        dynamic_lr_loss.backward()
+
+        grad = self.cf_model.pi_i_hat.grad
+        lr = self._dynamic_lr_from_grad(
+            grad,
+            num_epochs,
+            active_mask=active_mask,
+        )
         self._current_lr_debug_by_epoch = []
         if self.target_edge_debug:
             self._current_lr_debug_by_epoch = [
@@ -535,21 +628,17 @@ class CFExplainer:
                 )
                 active_mask = self._dynamic_lr_active_mask()
 
-                grad = None
-                if bool(active_mask.any().item()):
-                    output = self.cf_model.forward(self.sub_feat, self.sub_H)
-                    target_output = output[self.target_node_sub_idx].unsqueeze(0)
-                    dynamic_lr_loss = -F.nll_loss(target_output, target_label)
-                    dynamic_lr_loss.backward()
+                output = self.cf_model.forward(self.sub_feat, self.sub_H)
+                target_output = output[self.target_node_sub_idx].unsqueeze(0)
+                dynamic_lr_loss = -F.nll_loss(target_output, target_label)
+                dynamic_lr_loss.backward()
 
-                    grad = self.cf_model.pi_i_hat.grad
-                    lr = self._dynamic_lr_from_grad(
-                        grad,
-                        num_epochs,
-                        active_mask=active_mask,
-                    )
-                else:
-                    lr = 0.0
+                grad = self.cf_model.pi_i_hat.grad
+                lr = self._dynamic_lr_from_grad(
+                    grad,
+                    num_epochs,
+                    active_mask=active_mask,
+                )
                 epochwise_lrs.append(float(lr))
                 if self.target_edge_debug:
                     lr_debug_by_epoch.append(
@@ -561,10 +650,9 @@ class CFExplainer:
                         )
                     )
 
-                if grad is not None:
-                    self._set_optimizer_lr(calibration_optimizer, lr)
-                    clip_grad_norm_(self.cf_model.parameters(), 2.0)
-                    calibration_optimizer.step()
+                self._set_optimizer_lr(calibration_optimizer, lr)
+                clip_grad_norm_(self.cf_model.parameters(), 2.0)
+                calibration_optimizer.step()
         finally:
             self.cf_model.zero_grad(set_to_none=True)
             self.cf_model.reset_perturbation()
@@ -633,21 +721,17 @@ class CFExplainer:
                 )
                 active_mask = self._dynamic_lr_active_mask()
 
-                grad = None
-                if bool(active_mask.any().item()):
-                    output = self.cf_model.forward(self.sub_feat, self.sub_H)
-                    target_output = output[self.target_node_sub_idx].unsqueeze(0)
-                    dynamic_lr_loss = -F.nll_loss(target_output, target_label)
-                    dynamic_lr_loss.backward()
+                output = self.cf_model.forward(self.sub_feat, self.sub_H)
+                target_output = output[self.target_node_sub_idx].unsqueeze(0)
+                dynamic_lr_loss = -F.nll_loss(target_output, target_label)
+                dynamic_lr_loss.backward()
 
-                    grad = self.cf_model.pi_i_hat.grad
-                    lr = self._dynamic_lr_from_grad(
-                        grad,
-                        num_epochs,
-                        active_mask=active_mask,
-                    )
-                else:
-                    lr = 0.0
+                grad = self.cf_model.pi_i_hat.grad
+                lr = self._dynamic_lr_from_grad(
+                    grad,
+                    num_epochs,
+                    active_mask=active_mask,
+                )
                 checkpoint_lrs.append(float(lr))
                 if self.target_edge_debug:
                     checkpoint_debug.append(
@@ -659,10 +743,9 @@ class CFExplainer:
                         )
                     )
 
-                if grad is not None:
-                    self._set_optimizer_lr(calibration_optimizer, lr)
-                    clip_grad_norm_(self.cf_model.parameters(), 2.0)
-                    calibration_optimizer.step()
+                self._set_optimizer_lr(calibration_optimizer, lr)
+                clip_grad_norm_(self.cf_model.parameters(), 2.0)
+                calibration_optimizer.step()
         finally:
             self.cf_model.zero_grad(set_to_none=True)
             self.cf_model.reset_perturbation()
@@ -849,7 +932,6 @@ class CFExplainer:
         self._current_lr_checkpoint_epochs = []
         self._current_lr_checkpoint_values = []
         self._use_epochwise_dynamic_lr = False
-
         if isinstance(lr, float):
             lr = lr
         elif lr == DYNAMIC_LR_MODE:
@@ -876,7 +958,6 @@ class CFExplainer:
                 lr_mode_label = "dynamic powers-of-two"
             self._use_epochwise_dynamic_lr = True
             lr = scheduled_lrs[0] if scheduled_lrs else 0.0
-
             if debug_learning_rates and not self.quiet:
                 formatted_lrs = self._format_epochwise_learning_rates(
                     self._current_lr_checkpoint_values,
@@ -995,6 +1076,7 @@ class CFExplainer:
         loss_total, loss_pred, loss_graph_dist, cf_H = self.cf_model.loss(
             log_prob_new, self.y_pred_orig, y_pred_new_actual
         )
+        self._update_v3_no_more_edits()
         grad_is_zero = False
 
         stop_requested = bool(
