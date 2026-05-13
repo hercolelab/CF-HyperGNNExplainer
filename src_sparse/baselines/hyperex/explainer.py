@@ -74,11 +74,11 @@ class HyperExExplainer:
 
         with torch.no_grad():
             z_local = local_class_probabilities(
-                self.global_logits, self.local_to_global
+                self.global_probs, self.local_to_global
             )
             H_dense = sparse_incidence_to_dense(self.comp_H)
             h_global = compute_hyperedge_embeddings_global(
-                self.full_H, self.global_logits
+                self.full_H, self.global_probs
             )
             comp_edge_global_ids = extract_induced_edge_global_ids(
                 self.full_H, self._node_dict
@@ -101,8 +101,8 @@ class HyperExExplainer:
                 thresh_num=self.thresh_num,
             )
             rows, cols = self.comp_H.indices()
-            edge_scores = omega_m[rows, cols].detach().cpu()
-            local_norm = alpha[rows, cols].detach().cpu()
+            edge_scores = alpha[rows, cols].detach().cpu()
+            raw_edge_scores = omega_m[rows, cols].detach().cpu()
 
             S_expl = normalize_propagation(expl_H)
             log_p_expl = self.model(self.sub_feat, S_expl)[self.target_node_local]
@@ -126,7 +126,8 @@ class HyperExExplainer:
             "num_links_comp_minus_expl": int(comp_minus_expl_H._nnz()),
             "num_links_comp": self.num_links,
             "edge_scores": edge_scores,
-            "local_norm": local_norm,
+            "local_norm": edge_scores,
+            "raw_edge_scores": raw_edge_scores,
             "alpha": alpha.detach().cpu(),
         }
 
@@ -184,5 +185,6 @@ class HyperExExplainer:
             "num_links_comp": 0,
             "edge_scores": torch.zeros(0),
             "local_norm": torch.zeros(0),
+            "raw_edge_scores": torch.zeros(0),
             "alpha": torch.zeros(0),
         }

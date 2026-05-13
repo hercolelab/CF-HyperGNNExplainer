@@ -166,22 +166,27 @@ def build_explanation_hypergraph_from_alpha(
     return build_binary_hypergraph(comp_H, selected_inds)
 
 
-def training_dense_weights_from_alpha(
-    alpha: Tensor,
+def training_topk_weights_from_scores(
+    scores: Tensor,
     H_dense: Tensor,
     thresh_num: int,
 ) -> Tensor:
     pair_mask = H_dense > 0
-    flat = alpha[pair_mask]
-    if flat.numel() == 0:
+    flat = scores[pair_mask]
+    if flat.numel() == 0 or thresh_num <= 0:
         return torch.zeros_like(H_dense)
 
     k = min(int(thresh_num), flat.numel())
     top_idx = torch.topk(flat, k=k, largest=True).indices
     masked_flat = torch.zeros_like(flat)
     masked_flat.scatter_(0, top_idx, flat[top_idx])
-    s = masked_flat.sum().clamp(min=1e-12)
-    masked_flat = masked_flat / s
+    denom = masked_flat.sum()
+    zero = torch.zeros((), dtype=denom.dtype, device=denom.device)
+    if torch.isclose(denom.detach(), zero):
+        masked_flat = torch.zeros_like(flat)
+        masked_flat.scatter_(0, top_idx, 1.0 / k)
+    else:
+        masked_flat = masked_flat / denom
 
     dense_w = torch.zeros_like(H_dense)
     dense_w[pair_mask] = masked_flat

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 def InfoNCE_loss(
     z1: torch.Tensor,
     z2: torch.Tensor,
-    tau: float = 1.0,
+    tau: float = 0.5,
     normalize: bool = False,
 ) -> torch.Tensor:
     """

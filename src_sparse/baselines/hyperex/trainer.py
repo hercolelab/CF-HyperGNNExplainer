@@ -14,7 +14,7 @@ from baselines.hyperex.common import (
     local_class_probabilities,
     normalize_propagation_dense,
     sparse_incidence_to_dense,
-    training_dense_weights_from_alpha,
+    training_topk_weights_from_scores,
 )
 from baselines.hyperex.infonce import InfoNCE_loss
 
@@ -105,7 +105,7 @@ def train_hyperex_attention(
     device: torch.device,
     attention_module: torch.nn.Module | None = None,
     batch_size: int = 64,
-    tau: float = 1.0,
+    tau: float = 0.5,
 ) -> torch.nn.Module:
     H = H.coalesce().to(device)
     features = features.to(device)
@@ -138,7 +138,8 @@ def train_hyperex_attention(
 
     with torch.no_grad():
         S_full = normalize_propagation(H)
-        global_z = model(features, S_full, return_embeddings=True)
+        global_logits = model(features, S_full, return_embeddings=True)
+        global_z = global_logits.softmax(dim=1)
         h_global = compute_hyperedge_embeddings_global(H, global_z)
 
     for epoch in range(epochs):
@@ -180,7 +181,7 @@ def train_hyperex_attention(
                 target_local = int(node_dict[node_idx])
                 hop_distances = local_hop_distances(H_dense, target_local, n_hops)
 
-                alpha, _ = attention_module.forward_dense(
+                alpha, omega = attention_module.forward_dense(
                     z_local,
                     h_edges,
                     H_dense,
@@ -189,9 +190,12 @@ def train_hyperex_attention(
                 if alpha.sum() == 0:
                     continue
 
-                dense_w = training_dense_weights_from_alpha(alpha, H_dense, thresh_num)
+                dense_w = training_topk_weights_from_scores(
+                    omega, H_dense, thresh_num
+                )
                 S_local = normalize_propagation_dense(dense_w)
-                out_local = model(sub_feat, S_local, return_embeddings=True)
+                out_local_logits = model(sub_feat, S_local, return_embeddings=True)
+                out_local = out_local_logits.softmax(dim=1)
 
                 if torch.any(torch.isnan(out_local)):
                     print(f"NaN encountered for node {node_idx}; skipping.")

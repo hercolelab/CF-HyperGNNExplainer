@@ -100,14 +100,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tau",
         type=float,
-        default=1.0,
+        default=0.5,
         help="InfoNCE temperature.",
     )
     parser.add_argument(
         "--seed",
         type=int,
-        default=42,
-        help="Seed used for HyperEx attention initialization.",
+        default=0,
+        help="Seed used for HyperEx attention initialization and AllSet node sampling.",
     )
     parser.add_argument(
         "--attention-ckpt",
@@ -295,7 +295,7 @@ def run_inference(
         checkpoint_path=args.attention_ckpt,
     )
     if args.attention_ckpt is None:
-        print("Running HyperEx inference with an uninitialised attention module.")
+        print("Running HyperEx inference with an untrained attention module.")
 
     if args.target_node is not None:
         if not 0 <= args.target_node < data.num_nodes:
@@ -307,6 +307,15 @@ def run_inference(
         target_nodes = [int(idx) for idx in torch.where(data.test_mask)[0]]
         if not target_nodes:
             raise ValueError(f"Dataset {args.dataset} has no test nodes.")
+        is_allset = args.dataset not in PLANETOID_DATASETS
+        if is_allset and len(target_nodes) > 500:
+            generator = torch.Generator().manual_seed(args.seed)
+            perm = torch.randperm(len(target_nodes), generator=generator)[:500]
+            target_nodes = sorted(target_nodes[int(i)] for i in perm)
+            print(
+                f"Subsampled {len(target_nodes)} test node(s) from AllSet dataset "
+                f"{args.dataset} with seed {args.seed}."
+            )
         print(f"Explaining {len(target_nodes)} test node(s).")
 
     with torch.no_grad():
