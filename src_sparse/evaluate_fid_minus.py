@@ -31,6 +31,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def format_summary(vals: list[float]) -> str:
+    mean = float(np.mean(vals))
+    std = float(np.std(vals))
+    return f"{mean:.4f} +/- {std:.4f}"
+
+
 def compute_metrics(results: List) -> None:
     """Compute and print all fidelity and concision metrics."""
     non_null = [r for r in results if r is not None]
@@ -50,6 +56,7 @@ def compute_metrics(results: List) -> None:
     fid_xent: list[float] = []
     sizes: list[float] = []
     densities: list[float] = []
+    sparsities: list[float] = []
 
     eps = 1e-10
 
@@ -76,11 +83,12 @@ def compute_metrics(results: List) -> None:
         sizes.append(float(r["num_links_expl"]))
         comp = r["num_links_comp"]
         densities.append(r["num_links_expl"] / comp if comp > 0 else 0.0)
+        sparsities.append(1 - r["num_links_expl"] / comp if comp > 0 else np.nan)
 
     print(f"\nSHypX fidelity- evaluation  ({N} / {total} valid)\n")
     if isolated > 0:
         print(f"Excluded {isolated} isolated node(s) (num_links_comp == 0) from the average.\n")
-    print(f"  {'Metric':<22} {'Mean':>10} {'Std':>10}")
+    print(f"  {'Metric':<22} {'Value':>20}")
     print("  " + "-" * 44)
 
     for name, vals in [
@@ -90,9 +98,9 @@ def compute_metrics(results: List) -> None:
         ("Fid-_Xent (↓)", fid_xent),
         ("Size       (↓)", sizes),
         ("Density    (↓)", densities),
+        ("Sparsity   (↑)", sparsities),
     ]:
-        m, s = float(np.mean(vals)), float(np.std(vals))
-        print(f"  {name:<22} {m:>10.4f} {s:>10.4f}")
+        print(f"  {name:<22} {format_summary(vals):>20}")
 
     print()
 

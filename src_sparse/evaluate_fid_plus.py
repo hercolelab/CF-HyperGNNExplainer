@@ -38,6 +38,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def format_summary(vals: list[float]) -> str:
+    mean = float(np.mean(vals))
+    std = float(np.std(vals))
+    return f"{mean:.4f} +/- {std:.4f}"
+
+
 def compute_metrics(results: List, complement_log_key: str) -> None:
     """Compute and print fidelity+ metrics."""
     non_null = [r for r in results if r is not None]
@@ -76,6 +82,7 @@ def compute_metrics(results: List, complement_log_key: str) -> None:
     fidp_kl: list[float] = []
     fidp_tv: list[float] = []
     fidp_xent: list[float] = []
+    sparsities: list[float] = []
 
     eps = 1e-10
 
@@ -99,13 +106,16 @@ def compute_metrics(results: List, complement_log_key: str) -> None:
         xent = -(p_comp_minus_expl * p_orig.log()).sum().item()
         fidp_xent.append(xent)
 
+        comp = r["num_links_comp"]
+        sparsities.append(1 - r["num_links_expl"] / comp if comp > 0 else np.nan)
+
     print(f"\nSHypX fidelity+ evaluation  ({N} / {total} nodes with usable entries)\n")
     if isolated > 0:
         print(f"Excluded {isolated} isolated node(s) (num_links_comp == 0) from the average.\n")
     if missing > 0:
         print(f"Skipped {missing} non-null result(s) missing '{complement_log_key}'.\n")
 
-    print(f"  {'Metric':<22} {'Mean':>10} {'Std':>10}")
+    print(f"  {'Metric':<22} {'Value':>20}")
     print("  " + "-" * 44)
 
     for name, vals in [
@@ -113,9 +123,9 @@ def compute_metrics(results: List, complement_log_key: str) -> None:
         ("Fid+_KL   (↑)", fidp_kl),
         ("Fid+_TV   (↑)", fidp_tv),
         ("Fid+_Xent (↑)", fidp_xent),
+        ("Sparsity  (↑)", sparsities),
     ]:
-        m, s = float(np.mean(vals)), float(np.std(vals))
-        print(f"  {name:<22} {m:>10.4f} {s:>10.4f}")
+        print(f"  {name:<22} {format_summary(vals):>20}")
 
     print()
 
