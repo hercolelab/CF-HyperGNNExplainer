@@ -1,0 +1,41 @@
+defaults:
+  device: auto
+  quiet: false
+  num-epochs: 200
+  ckpt-path: ../models/Cora.pt
+  cf-optimizer: SGD
+
+experiments:
+  - name: cora-v1-beta-incremental-lr-dynamic-no-momentum
+    dataset: Cora
+    lr: dynamic
+    beta: incremental
+    strategy: v1
+    quiet: true
+    n-momentum: 0.0
+    n-hops: 3
+    num-epochs: 50 
+    ckpt-path: ../models/Cora.pt
+    strategy: v3
+  - name: cora-v1-beta-incremental-lr-dynamic-momentum-0.9
+    dataset: Cora
+    lr: dynamic
+    beta: incremental
+    strategy: v1
+    quiet: true
+    n-momentum: 0.9
+    n-hops: 3
+    num-epochs: 50 
+    ckpt-path: ../models/Cora.pt
+    strategy: v3
+
+
+
+# sweeps:
+#   - name: cora-grid
+#     base:
+#       dataset: Cora
+#     grid:
+#       strategy: [v1, v3]
+#       beta: [0.1, 0.5, incremental]
+#       lr: [0.01, 0.1, dynamic]
