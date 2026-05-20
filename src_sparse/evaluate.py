@@ -418,9 +418,12 @@ def main():
         "fid_minus_tv",
         "fid_minus_xent",
     ]
+    structural_metrics = frozenset({"graph_dist", "sparsity"})
 
     def values_for(scope: str, key: str) -> list:
         base = success_values.get(key, [])
+        if key in structural_metrics:
+            return base
         if scope == "found":
             return base
         if not has_removed_only and key.startswith("fid_minus"):
