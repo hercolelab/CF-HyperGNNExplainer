@@ -186,6 +186,21 @@ def train_model(
             f"Epoch {epoch:03d} | Train Loss: {loss.item():.4f} | Train Acc: {train_acc:.4f}"
         )
 
+    n_test = int(graph.test_mask.sum().item())
+    model.eval()
+    with torch.no_grad():
+        eval_output = model(graph.x, norm_adj)
+        if n_test > 0:
+            test_loss = model.loss(
+                eval_output[graph.test_mask], graph.y[graph.test_mask]
+            ).item()
+            test_pred = eval_output[graph.test_mask].argmax(dim=1)
+            test_acc = test_pred.eq(graph.y[graph.test_mask]).sum().item() / n_test
+        else:
+            test_loss = float("nan")
+            test_acc = float("nan")
+    print(f"Final Test Loss: {test_loss:.4f} | Final Test Acc: {test_acc:.4f}")
+
 
 def default_output_path(dataset: str) -> str:
     results_dir = os.path.abspath(
