@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from utils import normalize_propagation
 
 DEFAULT_DYNAMIC_LR_ACTIVE_LOGIT_LIMIT = 6
+PERTURBATION_INIZIALIZATION = 4.0
 
 def sparse_hadamard_product(sparse_tensor, dense_matrix):
     """
@@ -113,7 +114,7 @@ class HGCN_Perturb(nn.Module):
         num_nodes, num_edges = self.H.shape
 
         self.pi_i_hat = nn.Parameter(
-            torch.full((num_edges,), 4.0, device=H.device), requires_grad=True
+            torch.full((num_edges,), PERTURBATION_INIZIALIZATION, device=H.device), requires_grad=True
         )
 
         self.pi_i = None
@@ -127,7 +128,7 @@ class HGCN_Perturb(nn.Module):
 
     def reset_perturbation(self) -> None:
         with torch.no_grad():
-            self.pi_i_hat.fill_(4.0)
+            self.pi_i_hat.fill_(PERTURBATION_INIZIALIZATION)
         self.pi_i = None
         self.H_tilde = None
         self.no_more_edits = False
