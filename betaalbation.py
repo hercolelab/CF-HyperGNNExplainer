@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Compare the sparse explainer dynamic learning-rate strategies.
+"""Run the sparse explainer beta ablation and print compact CSV metrics.
 
-The experiment intentionally keeps the existing project files unchanged. It
-runs ``src_sparse/main_explain.py`` once for each dynamic LR mode with the
-fixed settings requested for this comparison:
+This script intentionally leaves the existing project files unchanged. It
+runs ``src_sparse/main_explain.py`` for the three requested beta settings:
 
-* beta = 0.001
-* num_epochs = 50
+* 0.005
+* 0.05
+* incremental
 
-Normal execution writes one result pickle per LR strategy plus an aggregate
-dump. ``--evaluate-only`` reads that aggregate dump and prints compact CSV
-metrics.
+Each run uses ``--lr dynamic`` and ``--num-epochs 50``. Normal execution writes
+one result pickle per beta value plus an aggregate dump. ``--evaluate-only``
+reads that aggregate dump and prints the requested CSV rows.
 """
 
 from __future__ import annotations
@@ -25,30 +25,35 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
-import torch
 
-
-BETA = 0.000
+BETA_ARGUMENTS = ("0.1", "0.5")
+LR_ARGUMENT = "dynamic"
 EPOCHS = 50
-LR_STRATEGIES = ("dynamic", "dynamic-powers-of-two", "dynamic-epochwise")
-EXPLAINER_STRATEGIES = ("v1", "v3")
-SCOPES = ("non_isolated", "possible", "found")
+SCOPES = ("possible",)
 CSV_COLUMNS = [
-    "strategy",
-    "lr_strategy",
+    "beta_argument",
     "scope",
     "fidelity_accuracy_plus",
-    "denominator",
     "explanation_time",
     "graph_distance",
 ]
+_TORCH: Any | None = None
+
+
+def get_torch() -> Any:
+    global _TORCH
+    if _TORCH is None:
+        import torch as torch_module
+
+        _TORCH = torch_module
+    return _TORCH
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run and evaluate the three dynamic learning-rate strategies "
-            "available through src_sparse/main_explain.py."
+            "Compare the requested beta settings available through "
+            "src_sparse/main_explain.py."
         )
     )
     parser.add_argument(
@@ -67,8 +72,8 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         default=None,
         help=(
-            "Directory for strategy result pickles, CSV, and aggregate dump "
-            "(default: results/lrstrategy_<dataset>)."
+            "Directory for beta result pickles, CSV, and aggregate dump "
+            "(default: results/betaalbation_<dataset>)."
         ),
     )
     parser.add_argument(
@@ -76,7 +81,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Aggregate pickle dump path "
-            "(default: <output-dir>/lrstrategy_dump.pkl)."
+            "(default: <output-dir>/betaalbation_dump.pkl)."
         ),
     )
     parser.add_argument(
@@ -92,18 +97,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--evaluate-only",
         action="store_true",
-        help="Read a previous lrstrategy.py output and print the requested CSV.",
+        help="Read a previous betaalbation.py output and print CSV.",
     )
     parser.add_argument(
         "--strategy",
-        dest="strategies",
-        nargs="+",
-        choices=EXPLAINER_STRATEGIES,
-        default=list(EXPLAINER_STRATEGIES),
-        help=(
-            "Explanation strategy or strategies passed to the sparse explainer "
-            "(default: run both v1 and v3)."
-        ),
+        choices=("v1", "v3"),
+        default="v1",
+        help="Explanation strategy passed to the sparse explainer.",
     )
     parser.add_argument(
         "--cf-optimizer",
@@ -146,7 +146,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rerun",
         action="store_true",
-        help="Regenerate strategy result pickles even when they already exist.",
+        help="Regenerate beta result pickles even when they already exist.",
     )
     parser.add_argument(
         "--dry-run",
@@ -172,8 +172,30 @@ def sanitize_name(text: str) -> str:
     return value if value else "item"
 
 
-def float_token(value: float) -> str:
-    return f"{value:g}".replace(".", "p").replace("-", "m")
+def normalize_beta_argument(beta_arg: object) -> str:
+    value = str(beta_arg).strip()
+    if value.startswith("--"):
+        value = value[2:]
+    if value == "incremntal":
+        value = "incremental"
+    return value
+
+
+def beta_token(beta_arg: str) -> str:
+    return sanitize_name(
+        normalize_beta_argument(beta_arg)
+        .replace(".", "p")
+        .replace("-", "m")
+    )
+
+
+def normalize_scope(scope: object) -> str:
+    value = str(scope).strip().replace("_", "-")
+    if value == "non-isolated":
+        return value
+    if value == "possible":
+        return value
+    return value
 
 
 def resolve_path(path_text: str | None, repo_root: Path) -> Path | None:
@@ -187,7 +209,7 @@ def resolve_path(path_text: str | None, repo_root: Path) -> Path | None:
 
 def default_output_dir(repo_root: Path, dataset: str) -> Path:
     dataset_token = sanitize_name(dataset.casefold())
-    return repo_root / "results" / f"lrstrategy_{dataset_token}"
+    return repo_root / "results" / f"betaalbation_{dataset_token}"
 
 
 def resolve_output_dir(args: argparse.Namespace, repo_root: Path) -> Path:
@@ -204,7 +226,7 @@ def resolve_dump_path(args: argparse.Namespace, repo_root: Path) -> Path:
         resolved = resolve_path(explicit, repo_root)
         assert resolved is not None
         return resolved
-    return resolve_output_dir(args, repo_root) / "lrstrategy_dump.pkl"
+    return resolve_output_dir(args, repo_root) / "betaalbation_dump.pkl"
 
 
 def format_number(value: object) -> str:
@@ -224,6 +246,7 @@ def format_number(value: object) -> str:
 
 
 def torch_load(path: Path) -> Any:
+    torch = get_torch()
     try:
         return torch.load(path, map_location="cpu", weights_only=False)
     except TypeError:
@@ -255,19 +278,19 @@ def checkpoint_architecture_args(
     }
 
 
-def strategy_output_path(
+def beta_output_path(
     output_dir: Path,
     dataset: str,
-    lr_strategy: str,
+    beta_arg: str,
     explain_strategy: str,
     target_node: int | None,
 ) -> Path:
     dataset_token = sanitize_name(dataset.casefold())
-    lr_token = sanitize_name(lr_strategy)
     target_token = "" if target_node is None else f"_node{target_node}"
     return output_dir / (
-        f"cf_examples_{dataset_token}_lrstrategy_beta{float_token(BETA)}_"
-        f"epochs{EPOCHS}_{lr_token}_{explain_strategy}{target_token}.pkl"
+        f"cf_examples_{dataset_token}_betaalbation_beta{beta_token(beta_arg)}_"
+        f"lr{sanitize_name(LR_ARGUMENT)}_epochs{EPOCHS}_"
+        f"{sanitize_name(explain_strategy)}{target_token}.pkl"
     )
 
 
@@ -276,10 +299,9 @@ def build_explainer_command(
     repo_root: Path,
     model_path: Path,
     output_path: Path,
-    lr_strategy: str,
+    beta_arg: str,
     architecture_args: dict[str, object],
     args: argparse.Namespace,
-    explain_strategy: str,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -289,13 +311,13 @@ def build_explainer_command(
         "--n-hops",
         str(args.n_hops),
         "--beta",
-        f"{BETA:g}",
+        normalize_beta_argument(beta_arg),
         "--cf-optimizer",
         args.cf_optimizer,
         "--strategy",
-        explain_strategy,
+        args.strategy,
         "--lr",
-        lr_strategy,
+        LR_ARGUMENT,
         "--n-momentum",
         str(args.n_momentum),
         "--num-epochs",
@@ -329,35 +351,77 @@ def load_pickle(path: Path) -> Any:
         return pickle.load(handle)
 
 
-def get_incidence_diff(sub_h: torch.Tensor, cf_h: torch.Tensor) -> float:
-    sub_dense = sub_h.to_dense().cpu()
-    cf_dense = cf_h.to_dense().cpu()
-    diff = torch.abs(sub_dense - cf_dense)
-    return float(torch.sum((diff > 1e-5).float()).item())
+def as_tensor(value: object) -> Any:
+    torch = get_torch()
+    if isinstance(value, torch.Tensor):
+        return value
+    return torch.as_tensor(value)
 
 
-def get_hyperedge_diff(sub_h: torch.Tensor, cf_h: torch.Tensor) -> float:
-    sub_h = sub_h.coalesce()
-    cf_h = cf_h.coalesce()
+def sparse_value_map(
+    tensor_value: object,
+    eps: float = 1e-5,
+) -> dict[tuple[int, int], float]:
+    tensor = as_tensor(tensor_value)
+    if not tensor.is_sparse:
+        tensor = tensor.to_sparse()
+    tensor = tensor.coalesce().cpu()
+    indices = tensor.indices()
+    values = tensor.values()
+    entries: dict[tuple[int, int], float] = {}
+    for idx in range(values.numel()):
+        value = float(values[idx].item())
+        if abs(value) > eps:
+            entries[(int(indices[0, idx].item()), int(indices[1, idx].item()))] = value
+    return entries
+
+
+def incidence_diff_count(
+    sub_h: object,
+    cf_h: object,
+    eps: float = 1e-5,
+) -> float:
+    sub_entries = sparse_value_map(sub_h, eps=eps)
+    cf_entries = sparse_value_map(cf_h, eps=eps)
+    keys = set(sub_entries) | set(cf_entries)
+    return float(
+        sum(
+            1
+            for key in keys
+            if abs(sub_entries.get(key, 0.0) - cf_entries.get(key, 0.0)) > eps
+        )
+    )
+
+
+def removed_hyperedge_count(
+    sub_h_value: object,
+    cf_h_value: object,
+    eps: float = 1e-5,
+) -> float:
+    sub_h = as_tensor(sub_h_value)
+    cf_h = as_tensor(cf_h_value)
+    if not sub_h.is_sparse:
+        sub_h = sub_h.to_sparse()
+    if not cf_h.is_sparse:
+        cf_h = cf_h.to_sparse()
+    sub_h = sub_h.coalesce().cpu()
+    cf_h = cf_h.coalesce().cpu()
 
     sub_indices = sub_h.indices()
-    if sub_indices.numel() == 0:
-        return 0.0
-    sub_cols = set(int(value) for value in torch.unique(sub_indices[1]).cpu().tolist())
-
+    sub_values = sub_h.values()
+    sub_cols = {
+        int(sub_indices[1, idx].item())
+        for idx in range(sub_values.numel())
+        if abs(float(sub_values[idx].item())) > eps
+    }
     cf_indices = cf_h.indices()
     cf_values = cf_h.values()
-    if cf_indices.numel() == 0:
-        present_cf_cols: set[int] = set()
-    else:
-        nonzero_mask = cf_values.abs() > 1e-5
-        present_cf_cols = (
-            set(int(value) for value in cf_indices[1][nonzero_mask].cpu().tolist())
-            if bool(nonzero_mask.any().item())
-            else set()
-        )
-
-    return float(sum(1 for col in sub_cols if col not in present_cf_cols))
+    cf_cols = {
+        int(cf_indices[1, idx].item())
+        for idx in range(cf_values.numel())
+        if abs(float(cf_values[idx].item())) > eps
+    }
+    return float(len(sub_cols - cf_cols))
 
 
 def iter_success_rows(cf_examples_per_node: Iterable[object]) -> list[list[object]]:
@@ -372,7 +436,9 @@ def iter_success_rows(cf_examples_per_node: Iterable[object]) -> list[list[objec
     return rows
 
 
-def iter_failure_entries(cf_examples_per_node: Iterable[object]) -> list[dict[str, Any]]:
+def iter_failure_entries(
+    cf_examples_per_node: Iterable[object],
+) -> list[dict[str, Any]]:
     failures: list[dict[str, Any]] = []
     for example in cf_examples_per_node:
         if isinstance(example, dict):
@@ -392,7 +458,7 @@ def average(values: Iterable[float], denominator: int | None = None) -> float | 
 def summarize_payload(
     payload: object,
     *,
-    lr_strategy: str,
+    beta_arg: str,
     explain_strategy: str,
 ) -> list[dict[str, object]]:
     if isinstance(payload, dict):
@@ -400,17 +466,15 @@ def summarize_payload(
         num_targets = int(payload.get("num_targets", len(cf_examples_per_node)))
         num_non_isolated = payload.get("num_non_isolated")
         num_cf_possible = payload.get("num_cf_possible")
-        num_cf_found = payload.get("num_cf_found")
-        explanation_time = payload.get("avg_time_possible")
-        if explanation_time is None:
-            explanation_time = payload.get("avg_time_non_isolated")
+        avg_time_non_isolated = payload.get("avg_time_non_isolated")
+        avg_time_possible = payload.get("avg_time_possible")
     else:
         cf_examples_per_node = payload
         num_targets = len(cf_examples_per_node)  # type: ignore[arg-type]
         num_non_isolated = None
         num_cf_possible = None
-        num_cf_found = None
-        explanation_time = None
+        avg_time_non_isolated = None
+        avg_time_possible = None
 
     isolated_count = sum(1 for example in cf_examples_per_node if example is None)
     failure_entries = iter_failure_entries(cf_examples_per_node)
@@ -419,15 +483,16 @@ def summarize_payload(
 
     if num_non_isolated is None:
         num_non_isolated = num_targets - isolated_count
-    if num_cf_found is None:
-        num_cf_found = len(success_rows)
     if num_cf_possible is None:
         num_cf_possible = len(success_rows) + len(possible_failures)
 
     denominator_by_scope = {
-        "non_isolated": int(num_non_isolated),
+        "non-isolated": int(num_non_isolated),
         "possible": int(num_cf_possible),
-        "found": int(num_cf_found),
+    }
+    time_by_scope = {
+        "non-isolated": avg_time_non_isolated,
+        "possible": avg_time_possible,
     }
 
     success_fid_plus: list[float] = []
@@ -440,17 +505,15 @@ def summarize_payload(
         cf_h = row[2]
         sub_h = row[3]
         if explain_strategy == "v3":
-            graph_distance = get_hyperedge_diff(sub_h, cf_h)
+            graph_distance = removed_hyperedge_count(sub_h, cf_h)
         else:
-            graph_distance = get_incidence_diff(sub_h, cf_h)
+            graph_distance = incidence_diff_count(sub_h, cf_h)
         success_graph_distances.append(graph_distance)
 
     rows: list[dict[str, object]] = []
     for scope in SCOPES:
         denominator = denominator_by_scope[scope]
-        if scope == "found":
-            failure_count = 0
-        elif scope == "possible":
+        if scope == "possible":
             failure_count = len(possible_failures)
         else:
             failure_count = len(failure_entries)
@@ -459,36 +522,46 @@ def summarize_payload(
         graph_values = success_graph_distances + [0.0] * failure_count
         rows.append(
             {
-                "strategy": explain_strategy,
-                "lr_strategy": lr_strategy,
+                "beta_argument": normalize_beta_argument(beta_arg),
                 "scope": scope,
                 "fidelity_accuracy_plus": average(fid_values, denominator),
-                "denominator": denominator,
-                "explanation_time": explanation_time,
+                "explanation_time": time_by_scope[scope],
                 "graph_distance": average(graph_values, denominator),
             }
         )
     return rows
 
 
-def row_sort_key(row: dict[str, object]) -> tuple[int, int, int, str]:
-    strategy = str(row.get("strategy", ""))
-    lr_strategy = str(row.get("lr_strategy", ""))
-    scope = str(row.get("scope", ""))
-    strategy_order = {value: index for index, value in enumerate(EXPLAINER_STRATEGIES)}
-    lr_strategy_order = {value: index for index, value in enumerate(LR_STRATEGIES)}
+def row_sort_key(row: dict[str, object]) -> tuple[int, int, str]:
+    beta_arg = normalize_beta_argument(row.get("beta_argument", ""))
+    scope = normalize_scope(row.get("scope", ""))
+    beta_order = {
+        normalize_beta_argument(value): index
+        for index, value in enumerate(BETA_ARGUMENTS)
+    }
     scope_order = {value: index for index, value in enumerate(SCOPES)}
     return (
-        strategy_order.get(strategy, len(strategy_order)),
-        lr_strategy_order.get(lr_strategy, len(lr_strategy_order)),
+        beta_order.get(beta_arg, len(beta_order)),
         scope_order.get(scope, len(scope_order)),
-        lr_strategy,
+        beta_arg,
     )
+
+
+def normalize_row(row: dict[str, object]) -> dict[str, object]:
+    row = dict(row)
+    if "beta_argument" not in row and "beta_arg" in row:
+        row["beta_argument"] = row["beta_arg"]
+    row["beta_argument"] = normalize_beta_argument(row.get("beta_argument", "unknown"))
+    row["scope"] = normalize_scope(row.get("scope", "unknown"))
+    return row
+
 
 def write_csv_rows(rows: list[dict[str, object]], handle) -> None:
     writer = csv.writer(handle, lineterminator="\n")
     writer.writerow(CSV_COLUMNS)
-    for row in sorted(rows, key=row_sort_key):
+    for row in sorted((normalize_row(row) for row in rows), key=row_sort_key):
+        if row["scope"] not in SCOPES:
+            continue
         writer.writerow([format_number(row.get(column)) for column in CSV_COLUMNS])
 
 
@@ -501,19 +574,14 @@ def write_csv_file(rows: list[dict[str, object]], csv_path: Path) -> None:
 def rows_from_dump(
     payload: object,
     repo_root: Path,
+    default_beta_arg: str,
     default_explain_strategy: str,
 ) -> list[dict[str, object]]:
     if isinstance(payload, dict) and "rows" in payload:
         rows = payload["rows"]
         if not isinstance(rows, list):
             raise ValueError("Aggregate dump 'rows' entry must be a list.")
-        default_strategy = str(payload.get("strategy", default_explain_strategy))
-        return [
-            {"strategy": default_strategy, **dict(row)}
-            if "strategy" not in dict(row)
-            else dict(row)
-            for row in rows
-        ]
+        return [normalize_row(dict(row)) for row in rows]
 
     if isinstance(payload, dict) and "runs" in payload:
         all_rows: list[dict[str, object]] = []
@@ -521,11 +589,14 @@ def rows_from_dump(
         for run in payload["runs"]:
             if not isinstance(run, dict):
                 raise ValueError("Aggregate dump 'runs' entries must be dictionaries.")
+            run_beta_arg = normalize_beta_argument(run.get("beta_argument", default_beta_arg))
+            run_explain_strategy = str(run.get("strategy", explain_strategy))
             if "rows" in run:
-                run_explain_strategy = str(run.get("strategy", explain_strategy))
                 for row in run["rows"]:
-                    row_dict = dict(row)
-                    row_dict.setdefault("strategy", run_explain_strategy)
+                    raw_row = dict(row)
+                    if "beta_argument" not in raw_row and "beta_arg" not in raw_row:
+                        raw_row["beta_argument"] = run_beta_arg
+                    row_dict = normalize_row(raw_row)
                     all_rows.append(row_dict)
                 continue
 
@@ -534,63 +605,63 @@ def rows_from_dump(
                 raise ValueError("Run entry lacks a result_path.")
             result_path = resolve_path(result_path_text, repo_root)
             assert result_path is not None
-            lr_strategy = str(run.get("lr_strategy", "unknown"))
-            run_explain_strategy = str(run.get("strategy", explain_strategy))
             all_rows.extend(
                 summarize_payload(
                     load_pickle(result_path),
-                    lr_strategy=lr_strategy,
+                    beta_arg=run_beta_arg,
                     explain_strategy=run_explain_strategy,
                 )
             )
         return all_rows
 
     if isinstance(payload, dict) and "cf_examples_per_node" in payload:
-        lr_strategy = str(payload.get("lr_strategy", "unknown"))
+        beta_arg = normalize_beta_argument(payload.get("beta_argument", default_beta_arg))
         explain_strategy = str(payload.get("strategy", default_explain_strategy))
         return summarize_payload(
             payload,
-            lr_strategy=lr_strategy,
+            beta_arg=beta_arg,
             explain_strategy=explain_strategy,
         )
 
     if isinstance(payload, list):
         return summarize_payload(
             payload,
-            lr_strategy="unknown",
+            beta_arg=default_beta_arg,
             explain_strategy=default_explain_strategy,
         )
 
-    raise ValueError("Unsupported lrstrategy/evaluation pickle format.")
+    raise ValueError("Unsupported betaalbation/evaluation pickle format.")
 
 
 def evaluate_only(args: argparse.Namespace, repo_root: Path) -> None:
     dump_path = resolve_dump_path(args, repo_root)
-    default_strategy = args.strategies[0] if len(args.strategies) == 1 else "v1"
-    rows = rows_from_dump(load_pickle(dump_path), repo_root, default_strategy)
+    rows = rows_from_dump(
+        load_pickle(dump_path),
+        repo_root,
+        default_beta_arg="unknown",
+        default_explain_strategy=args.strategy,
+    )
     write_csv_rows(rows, sys.stdout)
 
 
-def run_strategy(
+def run_beta(
     *,
     repo_root: Path,
     model_path: Path,
     output_path: Path,
-    lr_strategy: str,
+    beta_arg: str,
     architecture_args: dict[str, object],
     args: argparse.Namespace,
-    explain_strategy: str,
 ) -> None:
     command = build_explainer_command(
         repo_root=repo_root,
         model_path=model_path,
         output_path=output_path,
-        lr_strategy=lr_strategy,
+        beta_arg=beta_arg,
         architecture_args=architecture_args,
         args=args,
-        explain_strategy=explain_strategy,
     )
-    print(f"\n== strategy: {explain_strategy}; lr strategy: {lr_strategy} ==")
+    print(f"\n== beta argument: {normalize_beta_argument(beta_arg)} ==")
     print("Command:", " ".join(shlex.quote(part) for part in command))
 
     if args.dry_run:
@@ -603,7 +674,7 @@ def run_strategy(
     completed = subprocess.run(command, cwd=repo_root, check=False)
     if completed.returncode != 0:
         raise SystemExit(
-            f"main_explain.py failed for lr strategy {lr_strategy} "
+            f"main_explain.py failed for beta {normalize_beta_argument(beta_arg)} "
             f"with return code {completed.returncode}."
         )
     if not output_path.is_file():
@@ -623,55 +694,52 @@ def run_comparison(args: argparse.Namespace, repo_root: Path) -> None:
     rows: list[dict[str, object]] = []
     runs: list[dict[str, object]] = []
 
-    strategy_label = ", ".join(args.strategies)
     print(
-        f"Comparing dynamic LR strategies with beta={BETA:g}, "
-        f"epochs={EPOCHS}, dataset={args.dataset}, "
-        f"strategies=({strategy_label})."
+        f"Comparing beta arguments {', '.join(BETA_ARGUMENTS)} with "
+        f"lr={LR_ARGUMENT}, epochs={EPOCHS}, dataset={args.dataset}, "
+        f"strategy={args.strategy}."
     )
-    for explain_strategy in args.strategies:
-        for lr_strategy in LR_STRATEGIES:
-            output_path = strategy_output_path(
-                output_dir=output_dir,
-                dataset=args.dataset,
-                lr_strategy=lr_strategy,
-                explain_strategy=explain_strategy,
-                target_node=args.target_node,
-            )
-            run_strategy(
-                repo_root=repo_root,
-                model_path=model_path,
-                output_path=output_path,
-                lr_strategy=lr_strategy,
-                architecture_args=architecture_args,
-                args=args,
-                explain_strategy=explain_strategy,
-            )
+    for beta_arg in BETA_ARGUMENTS:
+        output_path = beta_output_path(
+            output_dir=output_dir,
+            dataset=args.dataset,
+            beta_arg=beta_arg,
+            explain_strategy=args.strategy,
+            target_node=args.target_node,
+        )
+        run_beta(
+            repo_root=repo_root,
+            model_path=model_path,
+            output_path=output_path,
+            beta_arg=beta_arg,
+            architecture_args=architecture_args,
+            args=args,
+        )
 
-            run_record: dict[str, object] = {
-                "strategy": explain_strategy,
-                "lr_strategy": lr_strategy,
-                "result_path": str(output_path),
-            }
-            if not args.dry_run:
-                run_rows = summarize_payload(
-                    load_pickle(output_path),
-                    lr_strategy=lr_strategy,
-                    explain_strategy=explain_strategy,
-                )
-                rows.extend(run_rows)
-                run_record["rows"] = run_rows
-            runs.append(run_record)
+        run_record: dict[str, object] = {
+            "strategy": args.strategy,
+            "beta_argument": normalize_beta_argument(beta_arg),
+            "result_path": str(output_path),
+        }
+        if not args.dry_run:
+            run_rows = summarize_payload(
+                load_pickle(output_path),
+                beta_arg=beta_arg,
+                explain_strategy=args.strategy,
+            )
+            rows.extend(run_rows)
+            run_record["rows"] = run_rows
+        runs.append(run_record)
 
     if args.dry_run:
         print("\nDry run complete; no explanations or dumps were written.")
         return
 
-    csv_path = output_dir / "lrstrategy_metrics.csv"
+    csv_path = output_dir / "betaalbation_metrics.csv"
     dump_path = (
         resolve_path(args.dump_path, repo_root)
         if args.dump_path
-        else output_dir / "lrstrategy_dump.pkl"
+        else output_dir / "betaalbation_dump.pkl"
     )
     assert dump_path is not None
     write_csv_file(rows, csv_path)
@@ -681,10 +749,10 @@ def run_comparison(args: argparse.Namespace, repo_root: Path) -> None:
         "model": str(model_path),
         "output_dir": str(output_dir),
         "csv_path": str(csv_path),
-        "beta": BETA,
+        "beta_arguments": list(BETA_ARGUMENTS),
+        "lr": LR_ARGUMENT,
         "epochs": EPOCHS,
-        "lr_strategies": list(LR_STRATEGIES),
-        "strategies": list(args.strategies),
+        "strategy": args.strategy,
         "cf_optimizer": args.cf_optimizer,
         "n_momentum": args.n_momentum,
         "n_hops": args.n_hops,
@@ -700,6 +768,7 @@ def run_comparison(args: argparse.Namespace, repo_root: Path) -> None:
     print(f"\nWrote metrics CSV: {csv_path}")
     print(f"Wrote aggregate dump: {dump_path}")
     print("Use --evaluate-only --results", dump_path, "to print the CSV.")
+
 
 def main() -> None:
     args = parse_args()
