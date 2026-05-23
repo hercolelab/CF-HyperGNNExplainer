@@ -70,6 +70,21 @@ class CFExplainer:
         if not self.quiet:
             print(*items)
 
+    def _set_optimizer_lr(self, lr):
+        for group in self.cf_optimizer.param_groups:
+            group["lr"] = float(lr)
+
+    def perturbation_is_saturated(self, threshold=1e-3):
+        if not 0.0 < threshold < 0.5:
+            raise ValueError("saturation threshold must be in (0, 0.5)")
+
+        with torch.no_grad():
+            probabilities = torch.sigmoid(self.cf_model.P_vec.detach())
+            saturated_entries = (probabilities < threshold) | (
+                probabilities > 1.0 - threshold
+            )
+            return bool(torch.all(saturated_entries).item())
+
     def explain(
         self,
         cf_optimizer,
@@ -79,6 +94,9 @@ class CFExplainer:
         n_momentum,
         num_epochs,
         patience=5,
+        lr_schedule=None,
+        saturation_threshold=None,
+        return_metadata=False,
     ):
         self.node_idx = node_idx
         self.new_idx = int(new_idx)
@@ -106,12 +124,25 @@ class CFExplainer:
         num_cf_examples = 0
         stop_counter = 0
         last_pred = -1
+        saturated = False
+        epochs_run = 0
         for epoch in range(num_epochs):
+            if lr_schedule is not None:
+                self._set_optimizer_lr(lr_schedule(epoch))
+
             new_example, loss_total, grad_is_zero, current_pred = self.train(epoch)
+            epochs_run = epoch + 1
             if new_example != [] and loss_total < best_loss:
                 best_cf_example.append(new_example)
                 best_loss = loss_total
                 num_cf_examples += 1
+
+            if saturation_threshold is not None and self.perturbation_is_saturated(
+                saturation_threshold
+            ):
+                saturated = True
+                self._log(f"\nSaturation stopping triggered at epoch {epoch + 1}")
+                break
 
             if grad_is_zero and current_pred == last_pred:
                 stop_counter += 1
@@ -128,6 +159,11 @@ class CFExplainer:
             last_pred = current_pred
         self._log(f"{num_cf_examples} CF examples for node_idx = {self.node_idx}")
         self._log(" ")
+        if return_metadata:
+            return best_cf_example, {
+                "saturated": saturated,
+                "epochs_run": epochs_run,
+            }
         return best_cf_example
 
     def train(self, epoch):
